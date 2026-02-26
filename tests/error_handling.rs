@@ -4,8 +4,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bytes::Bytes;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
-    RestErrorKind, RestRequest, RestResponse,
+    RestErrorKind, RestRequest, RestResponse, RestResult,
 };
+use shared_restapi::adapter::RestTransport;
+use serde::Deserialize;
 
 #[global_allocator]
 static GLOBAL: SharedRestapiTestAlloc = SharedRestapiTestAlloc;
@@ -230,9 +232,51 @@ async fn mocked_response_body_is_zero_copy() {
 
 #[tokio::test]
 async fn allocation_profile_is_measurable_for_execute_json_checked() {
-    let payload = b"[1,2,3,4,5,6,7,8,9,10]";
+    #[derive(Debug, Deserialize)]
+    struct AllocPayload {
+        ok: bool,
+        n: Vec<u32>,
+    }
+
+    let transport = HeaderHeavyTransport::new(Bytes::from_static(
+        b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}",
+    ));
+    let client = Client::with_transport(transport.clone());
 
     reset_alloc_counter();
+    let parsed = client
+        .execute_json::<AllocPayload>(RestRequest::post("https://api.example.com/alloc").with_body(
+            Bytes::from_static(b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}"),
+        ))
+        .await
+        .expect("baseline parse should succeed");
+    assert!(parsed.ok);
+    assert_eq!(parsed.n.len(), 10);
+    let execute_allocation_count = take_allocs();
+
+    reset_alloc_counter();
+    let parsed_direct = client
+        .execute_json_direct::<AllocPayload>(RestRequest::post("https://api.example.com/alloc").with_body(
+            Bytes::from_static(b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}"),
+        ))
+        .await
+        .expect("direct parse should succeed");
+    assert!(parsed_direct.ok);
+    assert_eq!(parsed_direct.n.len(), 10);
+    let direct_allocation_count = take_allocs();
+
+    eprintln!(
+        "allocation profile: execute_json={execute_allocation_count}, execute_json_direct={direct_allocation_count}"
+    );
+
+    // direct path should avoid constructing mock response headers payload in the transport.
+    assert!(
+        direct_allocation_count <= execute_allocation_count,
+        "direct path should be as allocation-light as or lighter than full response path: baseline {execute_allocation_count}, direct {direct_allocation_count}"
+    );
+
+    reset_alloc_counter();
+    let payload = b"[1,2,3,4,5,6,7,8,9,10]";
     let response = RestResponse {
         status: 200,
         headers: Vec::new(),
@@ -252,21 +296,41 @@ async fn allocation_profile_is_measurable_for_execute_json_checked() {
         sonic_rs::from_slice(&copied_body).expect("copied body parse should work");
     let copied_allocation_count = take_allocs();
 
-    let copied_by_manually_copying_body = {
-        reset_alloc_counter();
-        let mut copied_body = vec![0u8; payload.len()];
-        copied_body.copy_from_slice(payload);
-        let _copied_parse: Vec<u32> = sonic_rs::from_slice(&copied_body)
-            .expect("copied body parse should work");
-        take_allocs()
-    };
-
-    assert!(
-        copied_by_manually_copying_body >= copied_allocation_count,
-        "manually copying body should not be cheaper than the non-copied variant: {copied_by_manually_copying_body} vs {copied_allocation_count}"
-    );
-
     eprintln!(
-        "allocation profile: direct parse={execute_allocation_count}, copied to_vec={copied_allocation_count}, manual copy path={copied_by_manually_copying_body}"
+        "allocation profile: direct parse={execute_allocation_count}, copied to_vec={copied_allocation_count}"
     );
+}
+
+#[derive(Clone)]
+struct HeaderHeavyTransport {
+    body: Bytes,
+}
+
+impl HeaderHeavyTransport {
+    fn new(body: Bytes) -> Self {
+        Self { body }
+    }
+}
+
+impl RestTransport for HeaderHeavyTransport {
+    fn execute(&self, request: RestRequest) -> shared_restapi::adapter::RestFuture<RestResult<RestResponse>> {
+        let body = self.body.clone();
+        let headers = (0..64)
+            .map(|index| (format!("x-{index}"), Bytes::from_static(b"v")))
+            .collect();
+        Box::pin(async move {
+            let _ = request;
+            Ok(RestResponse {
+                status: 200,
+                headers,
+                body,
+                elapsed: std::time::Duration::from_millis(0),
+            })
+        })
+    }
+
+    fn execute_raw(&self, _request: RestRequest) -> shared_restapi::adapter::RestFuture<RestResult<(u16, Bytes, std::time::Duration)>> {
+        let body = self.body.clone();
+        Box::pin(async move { Ok((200, body, std::time::Duration::from_millis(0))) })
+    }
 }

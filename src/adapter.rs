@@ -272,6 +272,8 @@ pub struct RestResponse {
     pub elapsed: Duration,
 }
 
+pub type RestRawResponse = (u16, RestBytes, Duration);
+
 impl RestResponse {
     pub fn status(&self) -> u16 {
         self.status
@@ -309,6 +311,14 @@ impl RestResponse {
 
 pub trait RestTransport: Send + Sync {
     fn execute(&self, request: RestRequest) -> RestFuture<RestResult<RestResponse>>;
+
+    fn execute_raw(&self, request: RestRequest) -> RestFuture<RestResult<RestRawResponse>> {
+        let future = self.execute(request);
+        Box::pin(async move {
+            let response = future.await?;
+            Ok((response.status, response.body, response.elapsed))
+        })
+    }
 }
 
 pub type SharedRestTransport = dyn RestTransport + Send + Sync;
@@ -349,11 +359,31 @@ impl Client {
         self.execute(request).await?.json::<T>()
     }
 
+    pub async fn execute_json_direct<T>(&self, request: RestRequest) -> RestResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        let (_status, body, _elapsed) = self.transport.execute_raw(request).await?;
+        from_slice(&body).map_err(RestError::from)
+    }
+
     pub async fn execute_json_checked<T>(&self, request: RestRequest) -> RestResult<T>
     where
         T: DeserializeOwned,
     {
         self.execute_checked(request).await?.json::<T>()
+    }
+
+    pub async fn execute_json_checked_direct<T>(&self, request: RestRequest) -> RestResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        let (status, body, _elapsed) = self.transport.execute_raw(request).await?;
+        if !(200..300).contains(&status) {
+            let retryable = (500..600).contains(&status);
+            return Err(RestError::rejected(status, format!("request rejected: status={status}"), retryable));
+        }
+        from_slice(&body).map_err(RestError::from)
     }
 
     pub async fn get(&self, request: RestRequest) -> RestResult<RestResponse> {
@@ -379,6 +409,32 @@ impl Client {
     ) -> RestResult<RestResponse> {
         let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
         self.post(url, body).await
+    }
+
+    pub async fn post_json_direct<TPayload: Serialize, TResponse>(
+        &self,
+        url: impl Into<String>,
+        payload: &TPayload,
+    ) -> RestResult<TResponse>
+    where
+        TResponse: DeserializeOwned,
+    {
+        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
+        self.execute_json_direct(RestRequest::post(url).with_body(body))
+            .await
+    }
+
+    pub async fn post_json_checked_direct<TPayload: Serialize, TResponse>(
+        &self,
+        url: impl Into<String>,
+        payload: &TPayload,
+    ) -> RestResult<TResponse>
+    where
+        TResponse: DeserializeOwned,
+    {
+        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
+        self.execute_json_checked_direct(RestRequest::post(url).with_body(body))
+            .await
     }
 }
 
@@ -406,6 +462,42 @@ impl Default for ReqwestTransport {
 }
 
 impl RestTransport for ReqwestTransport {
+    fn execute_raw(&self, request: RestRequest) -> RestFuture<RestResult<RestRawResponse>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let start = Instant::now();
+            let mut req = client.request(request.method.clone(), &request.url);
+
+            for (key, value) in request.headers {
+                let value = HeaderValue::from_bytes(value.as_ref())
+                    .map_err(|err| RestError::internal(err.to_string()))?;
+                req = req.header(key, value);
+            }
+
+            if let Some(body) = request.body {
+                req = req.body(body);
+            }
+
+            if let Some(timeout) = request.timeout {
+                req = req.timeout(timeout);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|err| RestError::from_reqwest(RestErrorKind::Send, err))?;
+
+            let status = resp.status().as_u16();
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|err| RestError::from_reqwest(RestErrorKind::Receive, err))?;
+            let elapsed = start.elapsed();
+
+            Ok((status, body, elapsed))
+        })
+    }
+
     fn execute(&self, request: RestRequest) -> RestFuture<RestResult<RestResponse>> {
         let client = self.client.clone();
         Box::pin(async move {

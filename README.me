@@ -49,6 +49,15 @@ let envelope: RpcEnvelope<MyPayload> = client
 
 You do not need to keep a shared scratch buffer at the request level for JSON parsing. The parser reads the request/response byte buffer in place; per-response ownership of bytes is enough.
 
+If you want to avoid `RestResponse` construction entirely for successful/failed checked flows, use:
+
+- `execute_json_direct`
+- `execute_json_checked_direct`
+- `post_json_direct`
+- `post_json_checked_direct`
+
+These methods parse directly from transport bytes and bypass response-header materialization on the fast path where possible.
+
 ## Mocking
 
 The mock adapter supports deterministic behavior control for tests:
@@ -82,7 +91,13 @@ transport.queue_response(
   - normal API parse path
   - an explicit “copy-then-parse” path
   
-This verifies the crate avoids a deliberate body-copy parse stage; total process allocations are still expected from transport and Rust-owned model deserialization.
+`allocation_profile_is_measurable_for_execute_json_checked` now compares:
+
+- `execute_json` (full response path)
+- `execute_json_direct` (raw response path)
+- explicit copy+parse baselines
+
+In test runs, direct parse path keeps allocations flat or lower than the full path by skipping header payload assembly in `execute_raw`.
 
 Mock transport failures with typed variants:
 
