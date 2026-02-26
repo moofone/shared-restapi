@@ -1,4 +1,4 @@
-[![CI](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml/badge.svg)](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml)
+[![CI](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/shared-restapi.svg)](https://crates.io/crates/shared-restapi)
 [![docs.rs](https://docs.rs/shared-restapi/badge.svg)](https://docs.rs/shared-restapi)
 
