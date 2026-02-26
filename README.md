@@ -133,7 +133,7 @@ let _ = MockResponse::json_error(
 let _ = MockResponse::text(400, "invalid request body");
 ```
 
-## Mocking Example - Success
+## Example - Mock Success
 
 ```rust
 use shared_restapi::{
@@ -172,7 +172,7 @@ assert_eq!(
 
 ```
 
-## Mocking Example - Fail
+## Example - Mock Fail
 
 ```rust
 use shared_restapi::{
@@ -194,7 +194,7 @@ assert_eq!(fail.kind(), RestErrorKind::Rejected);
 assert_eq!(fail.is_retryable(), false);
 ```
 
-## Production usage
+## Example - Production Use
 
 ```rust
 use shared_restapi::{Client, RestRequest};
