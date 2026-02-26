@@ -14,6 +14,9 @@ Retries are opt-in and request-scoped. No retries occur unless you set retry pol
 
 Request bodies are bytes-only (`RestBytes` / `bytes::Bytes`) to prevent implicit request-side serialization allocations in this crate.
 
+Timeout and retry behavior is validated with feature-gated Axum e2e tests (`tests/e2e/e2e_jsonrpc.rs`). Run them explicitly with:
+`cargo test --features e2e-tests --test e2e_jsonrpc`.
+
 - a concrete `ReqwestTransport` for production
 - a `RestTransport` trait for transport abstraction
 - a simple `Client` facade for request execution
