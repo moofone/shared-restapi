@@ -1,12 +1,10 @@
 [![CI](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml)
+[![Latest Tag](https://img.shields.io/github/v/tag/moofone/shared-restapi?sort=semver)](https://github.com/moofone/shared-restapi/tags)
 
 Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests. Designed to minimize allocations while keeping a simple, production-friendly adapter surface.
 Rate limiting is intentionally layered separately and should be composed with
 `https://github.com/moofone/shared-rate_limiter` in callers that need request pacing.
 `shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
-
-`shared-restapi` defaults typed JSON calls to the direct parsing path. The raw
-`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*`) for JSON responses and `*_response` methods for explicit raw transport metadata.
 
 ### Parse path
 
@@ -26,21 +24,6 @@ The mock adapter supports deterministic behavior control for tests:
 
 Use it when you need tests that assert exact transport behavior without outbound network calls.
 
-### Mocking examples
-
-Mock response (success and error payloads):
-
-```rust
-transport.queue_response(
-    MockResponse::text(200, r#"{"ok":true}"#),
-);
-
-transport.queue_get_response(
-    "https://api.example.com/v1/ping",
-    MockResponse::text_error(500, "internal backend error"),
-);
-```
-
 ## Allocation notes
 
 - For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
@@ -52,10 +35,6 @@ A measurable allocation test (`allocation_profile_is_measurable_for_execute_json
 allocation profile: execute_json=139, execute_json_direct=9
 allocation profile: direct response json parse=7, parse from borrowed bytes=7
 ```
-
-The benchmark also includes a header-heavy mock transport, so the `execute_json_direct` path shows the benefit from skipping response-header materialization.
-  
-In test runs, the direct path stays flat or lower than the full path by skipping header payload assembly in `execute_raw`.
 
 ## Example - Mock Success
 
