@@ -62,6 +62,23 @@ fn request_timeout_defaults_to_two_seconds_and_is_overridable() {
 }
 
 #[test]
+fn request_can_set_timeout_and_retry_policy_together() {
+    let request = RestRequest::get("https://api.example.com/timeout-retry")
+        .with_timeout(std::time::Duration::from_millis(1500))
+        .with_retry_on_status(503, 2);
+
+    assert_eq!(
+        request.timeout,
+        Some(std::time::Duration::from_millis(1500))
+    );
+    let policy = request
+        .retry_policy
+        .expect("retry policy should be configured");
+    assert_eq!(policy.max_retries, 2);
+    assert_eq!(policy.statuses, vec![503]);
+}
+
+#[test]
 fn retry_helpers_build_expected_retry_policy() {
     let request = RestRequest::get("https://api.example.com/retry")
         .with_retry_on_4xx(2)
@@ -74,6 +91,28 @@ fn retry_helpers_build_expected_retry_policy() {
     assert!(policy.statuses.contains(&400));
     assert!(policy.statuses.contains(&499));
     assert!(policy.statuses.contains(&503));
+}
+
+#[tokio::test]
+async fn timeout_error_is_not_retried_even_when_status_retry_policy_is_set() {
+    let mut behavior_plan = MockBehaviorPlan::default();
+    behavior_plan.push(MockBehavior::timeout_error("timed out", Some(504), true));
+    behavior_plan.push(MockBehavior::Pass);
+    let adapter = MockRestAdapter::with_behavior_plan(behavior_plan);
+    let transport = Client::with_transport(adapter.clone());
+
+    let err = transport
+        .execute_json_checked::<Value>(
+            RestRequest::get("https://api.example.com/timeout-retry")
+                .with_timeout(std::time::Duration::from_millis(50))
+                .with_retry_on_status(504, 2),
+        )
+        .await
+        .expect_err("transport timeout should fail immediately");
+    assert_error_kind(err, RestErrorKind::Timeout, true);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 1);
 }
 
 #[test]

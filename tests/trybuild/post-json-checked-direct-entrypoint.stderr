@@ -1,0 +1,13 @@
+error[E0599]: no method named `post_json_checked_direct` found for struct `Client` in the current scope
+ --> tests/trybuild/post-json-checked-direct-entrypoint.rs:6:23
+  |
+6 |     let _fut = client.post_json_checked_direct::<_, sonic_rs::Value>(
+  |                -------^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `execute_json_checked_direct` with a similar name, but with different arguments
+ --> src/adapter.rs
+  |
+  | /     pub async fn execute_json_checked_direct<T>(&self, request: RestRequest) -> RestResult<T>
+  | |     where
+  | |         T: DeserializeOwned,
+  | |____________________________^

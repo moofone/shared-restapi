@@ -1,0 +1,11 @@
+error[E0599]: no method named `post_json_response` found for struct `Client` in the current scope
+ --> tests/trybuild/post-json-response-entrypoint.rs:6:23
+  |
+6 |     let _fut = client.post_json_response(
+  |                -------^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `post_response` with a similar name
+  |
+6 -     let _fut = client.post_json_response(
+6 +     let _fut = client.post_response(
+  |

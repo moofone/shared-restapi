@@ -1,4 +1,6 @@
-# shared-restapi
+[![CI](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml/badge.svg)](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/shared-restapi.svg)](https://crates.io/crates/shared-restapi)
+[![docs.rs](https://docs.rs/shared-restapi/badge.svg)](https://docs.rs/shared-restapi)
 
 Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests. Designed to minimize allocations while keeping a simple, production-friendly adapter surface.
 Rate limiting is intentionally layered separately and should be composed with
@@ -29,59 +31,6 @@ Timeout and retry behavior is validated with feature-gated Axum e2e tests (`test
 - there is no intermediate `String` conversion
 - no explicit JSON AST or intermediate object-blob step
 - `T` is deserialized in one pass from `&[u8]`
-
-For JSON-RPC or typed API responses, this means you deserialize directly into your Rust result type in one shot:
-
-```rust
-#[derive(serde::Deserialize)]
-struct RpcEnvelope<T> {
-    jsonrpc: String,
-    id: u64,
-    result: T,
-}
-
-let payload_bytes = bytes::Bytes::from_static(
-    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
-);
-
-let envelope: RpcEnvelope<MyPayload> = client
-    .execute_json_checked(
-        RestRequest::post("https://api.example.com/rpc").with_body(payload_bytes),
-    )
-    .await?;
-```
-
-Retry example for specific non-200 status:
-
-```rust
-let request = RestRequest::get("https://api.example.com/v1/data")
-    .with_retry_on_status(503, 2); // initial try + up to 2 retries on 503
-
-let payload: MyPayload = client.execute_json_checked(request).await?;
-```
-
-You do not need to keep a shared scratch buffer at the request level for JSON parsing. The parser reads the request/response byte buffer in place; per-response ownership of bytes is enough.
-
-`execute_json` and `execute_json_checked` now use the direct transport byte path, so most typed JSON callers get minimum-allocation behavior by default. Use explicit raw-response methods only when you need response metadata:
-
-- `execute_json_direct`
-- `execute_json_checked_direct`
-
-These methods parse directly from transport bytes and bypass response-header materialization on the fast path where possible.
-
-`get_response` and `post_response` return `RestResponse` and are available when explicit transport metadata is needed. The fast typed JSON path is `execute_json*`.
-
-The following entrypoints are intentionally unavailable in the public API to make slow/raw transport calls impossible:
-
-- `Client::execute`
-- `Client::execute_checked`
-- `Client::get`
-- `Client::post`
-- `Client::get_url`
-- `Client::post_json`
-- `Client::post_json_response`
-- `Client::post_json_direct`
-- `Client::post_json_checked_direct`
 
 ## Mocking
 

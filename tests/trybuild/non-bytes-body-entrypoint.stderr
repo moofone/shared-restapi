@@ -1,0 +1,17 @@
+error[E0308]: mismatched types
+ --> tests/trybuild/non-bytes-body-entrypoint.rs:5:20
+  |
+5 |         .with_body("{\"ok\":true}");
+  |          --------- ^^^^^^^^^^^^^^^ expected `Bytes`, found `&str`
+  |          |
+  |          arguments to this method are incorrect
+  |
+note: method defined here
+ --> src/adapter.rs
+  |
+  |     pub fn with_body(mut self, body: RestBytes) -> Self {
+  |            ^^^^^^^^^
+help: call `Into::into` on this expression to convert `&'static str` into `bytes::bytes::Bytes`
+  |
+5 |         .with_body("{\"ok\":true}".into());
+  |                                   +++++++
