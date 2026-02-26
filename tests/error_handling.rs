@@ -1,8 +1,38 @@
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use bytes::Bytes;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
-    RestErrorKind, RestRequest,
+    RestErrorKind, RestRequest, RestResponse,
 };
+
+#[global_allocator]
+static GLOBAL: SharedRestapiTestAlloc = SharedRestapiTestAlloc;
+
+static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+struct SharedRestapiTestAlloc;
+
+unsafe impl GlobalAlloc for SharedRestapiTestAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        System.alloc(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+        System.dealloc(ptr, layout);
+    }
+}
+
+fn reset_alloc_counter() {
+    ALLOC_COUNT.store(0, Ordering::Relaxed);
+}
+
+fn take_allocs() -> usize {
+    ALLOC_COUNT.load(Ordering::Relaxed)
+}
 
 fn adapter_with_behavior(behavior: MockBehavior) -> Client {
     let mut behavior_plan = MockBehaviorPlan::default();
@@ -196,4 +226,47 @@ async fn mocked_response_body_is_zero_copy() {
         .expect("mock response should be returned");
 
     assert_eq!(response.body().as_ptr(), original_ptr);
+}
+
+#[tokio::test]
+async fn allocation_profile_is_measurable_for_execute_json_checked() {
+    let payload = b"[1,2,3,4,5,6,7,8,9,10]";
+
+    reset_alloc_counter();
+    let response = RestResponse {
+        status: 200,
+        headers: Vec::new(),
+        body: Bytes::from_static(payload),
+        elapsed: std::time::Duration::from_millis(0),
+    };
+    let parsed = response
+        .json::<Vec<u32>>()
+        .expect("json parse should succeed");
+    assert_eq!(parsed, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    let execute_allocation_count = take_allocs();
+    assert!(execute_allocation_count > 0);
+
+    reset_alloc_counter();
+    let copied_body = payload.to_vec();
+    let _copied_parse: Vec<u32> =
+        sonic_rs::from_slice(&copied_body).expect("copied body parse should work");
+    let copied_allocation_count = take_allocs();
+
+    let copied_by_manually_copying_body = {
+        reset_alloc_counter();
+        let mut copied_body = vec![0u8; payload.len()];
+        copied_body.copy_from_slice(payload);
+        let _copied_parse: Vec<u32> = sonic_rs::from_slice(&copied_body)
+            .expect("copied body parse should work");
+        take_allocs()
+    };
+
+    assert!(
+        copied_by_manually_copying_body >= copied_allocation_count,
+        "manually copying body should not be cheaper than the non-copied variant: {copied_by_manually_copying_body} vs {copied_allocation_count}"
+    );
+
+    eprintln!(
+        "allocation profile: direct parse={execute_allocation_count}, copied to_vec={copied_allocation_count}, manual copy path={copied_by_manually_copying_body}"
+    );
 }

@@ -77,7 +77,12 @@ transport.queue_response(
 ## Allocation notes
 
 - For mocked responses, zero-copy behavior is verified with a pointer-equality integration test (`mocked_response_body_is_zero_copy`), asserting the same `Bytes` backing is preserved from queue to response.
-- For production transport, this crate keeps parsing zero-copy by design; allocation checks for the full stack include one parser-owned allocation by the underlying transport and direct parse to `T`.
+- For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
+- A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) contrasts:
+  - normal API parse path
+  - an explicit “copy-then-parse” path
+  
+This verifies the crate avoids a deliberate body-copy parse stage; total process allocations are still expected from transport and Rust-owned model deserialization.
 
 Mock transport failures with typed variants:
 
