@@ -4,7 +4,6 @@ use bytes::Bytes;
 use reqwest::header::HeaderValue;
 use reqwest::{Client as ReqwestClient, Method};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 use sonic_rs::from_slice;
 use thiserror::Error;
 
@@ -275,8 +274,8 @@ impl RestRequest {
         self
     }
 
-    pub fn with_body(mut self, body: impl Into<RestBytes>) -> Self {
-        self.body = Some(body.into());
+    pub fn with_body(mut self, body: RestBytes) -> Self {
+        self.body = Some(body);
         self
     }
 
@@ -299,6 +298,42 @@ impl RestRequest {
             statuses,
         });
         self
+    }
+
+    pub fn with_retry_on_statuses_extend<I>(mut self, statuses: I, max_retries: usize) -> Self
+    where
+        I: IntoIterator<Item = u16>,
+    {
+        let additional = statuses.into_iter().collect::<Vec<_>>();
+        match self.retry_policy.as_mut() {
+            Some(policy) => {
+                policy.max_retries = policy.max_retries.max(max_retries);
+                for status in additional {
+                    if !policy.statuses.contains(&status) {
+                        policy.statuses.push(status);
+                    }
+                }
+            }
+            None => {
+                self.retry_policy = Some(RestRetryPolicy {
+                    max_retries,
+                    statuses: additional,
+                });
+            }
+        }
+        self
+    }
+
+    pub fn with_retry_on_4xx(self, max_retries: usize) -> Self {
+        self.with_retry_on_statuses(400u16..500u16, max_retries)
+    }
+
+    pub fn with_retry_on_5xx(self, max_retries: usize) -> Self {
+        self.with_retry_on_statuses(500u16..600u16, max_retries)
+    }
+
+    pub fn with_retry_on_any_non_2xx(self, max_retries: usize) -> Self {
+        self.with_retry_on_statuses((100u16..200u16).chain(300u16..600u16), max_retries)
     }
 
     fn should_retry_status(&self, status: u16, attempt: usize) -> bool {
@@ -463,44 +498,9 @@ impl Client {
     pub async fn post_response(
         &self,
         url: impl Into<String>,
-        body: impl Into<RestBytes>,
+        body: RestBytes,
     ) -> RestResult<RestResponse> {
         self.execute(RestRequest::post(url).with_body(body)).await
-    }
-
-    pub async fn post_json_response<T: Serialize>(
-        &self,
-        url: impl Into<String>,
-        payload: &T,
-    ) -> RestResult<RestResponse> {
-        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
-        self.post_response(url, body).await
-    }
-
-    pub async fn post_json_direct<TPayload: Serialize, TResponse>(
-        &self,
-        url: impl Into<String>,
-        payload: &TPayload,
-    ) -> RestResult<TResponse>
-    where
-        TResponse: DeserializeOwned,
-    {
-        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
-        self.execute_json_direct(RestRequest::post(url).with_body(body))
-            .await
-    }
-
-    pub async fn post_json_checked_direct<TPayload: Serialize, TResponse>(
-        &self,
-        url: impl Into<String>,
-        payload: &TPayload,
-    ) -> RestResult<TResponse>
-    where
-        TResponse: DeserializeOwned,
-    {
-        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
-        self.execute_json_checked_direct(RestRequest::post(url).with_body(body))
-            .await
     }
 }
 

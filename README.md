@@ -6,11 +6,13 @@ Rate limiting is intentionally layered separately and should be composed with
 `shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
 
 `shared-restapi` defaults typed JSON calls to the direct parsing path. The raw
-`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*` / `post_json_direct` / `post_json_checked_direct`) for JSON responses and `*_response` methods for explicit raw transport metadata.
+`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*`) for JSON responses and `*_response` methods for explicit raw transport metadata.
 
 Production requests use a default timeout of `2s`. You can override per request with `RestRequest::with_timeout(...)`.
 
-Retries are opt-in and request-scoped. No retries occur unless you set retry policy on the request (`with_retry_on_status` or `with_retry_on_statuses`).
+Retries are opt-in and request-scoped. No retries occur unless you set retry policy on the request (`with_retry_on_status`, `with_retry_on_statuses`, `with_retry_on_4xx`, `with_retry_on_5xx`, or `with_retry_on_any_non_2xx`).
+
+Request bodies are bytes-only (`RestBytes` / `bytes::Bytes`) to prevent implicit request-side serialization allocations in this crate.
 
 - a concrete `ReqwestTransport` for production
 - a `RestTransport` trait for transport abstraction
@@ -35,8 +37,14 @@ struct RpcEnvelope<T> {
     result: T,
 }
 
+let payload_bytes = bytes::Bytes::from_static(
+    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
+);
+
 let envelope: RpcEnvelope<MyPayload> = client
-    .execute_json_checked(RestRequest::post("https://api.example.com/rpc").with_body(payload))
+    .execute_json_checked(
+        RestRequest::post("https://api.example.com/rpc").with_body(payload_bytes),
+    )
     .await?;
 ```
 
@@ -55,12 +63,10 @@ You do not need to keep a shared scratch buffer at the request level for JSON pa
 
 - `execute_json_direct`
 - `execute_json_checked_direct`
-- `post_json_direct`
-- `post_json_checked_direct`
 
 These methods parse directly from transport bytes and bypass response-header materialization on the fast path where possible.
 
-`get_response`, `post_response`, and `post_json_response` return `RestResponse` and are available when explicit transport metadata is needed. The fast typed JSON path is `execute_json*` / `post_json_direct`.
+`get_response` and `post_response` return `RestResponse` and are available when explicit transport metadata is needed. The fast typed JSON path is `execute_json*`.
 
 The following entrypoints are intentionally unavailable in the public API to make slow/raw transport calls impossible:
 
@@ -70,6 +76,9 @@ The following entrypoints are intentionally unavailable in the public API to mak
 - `Client::post`
 - `Client::get_url`
 - `Client::post_json`
+- `Client::post_json_response`
+- `Client::post_json_direct`
+- `Client::post_json_checked_direct`
 
 ## Mocking
 
@@ -114,22 +123,16 @@ struct DeribitCandles {
     result: Vec<Candle>,
 }
 
-let payload = sonic_rs::json!({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "public/get_order_book",
-    "params": { "instrument_name": "BTC-PERPETUAL" },
-});
+let payload = bytes::Bytes::from_static(
+    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
+);
 
 let candles: DeribitCandles = client
-    .post_json_direct(
-        "https://www.deribit.com/api/v2/private/get_last_trades_by_currency",
-        &payload,
-    )
+    .execute_json_checked(RestRequest::post("https://www.deribit.com/api/v2/private/get_last_trades_by_currency").with_body(payload))
     .await?;
 ```
 
-A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) prints the delta directly in test output:
+A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) prints the delta directly in test output (sample):
 
 ```text
 allocation profile: execute_json=139, execute_json_direct=9
@@ -227,7 +230,7 @@ let fail = client
     .await
     .expect_err("mocked rejection should be surfaced");
 assert_eq!(fail.kind(), RestErrorKind::Rejected);
-assert_eq!(fail.is_retryable(), false);
+assert_eq!(fail.is_retryable(), true);
 ```
 
 ## Example - Production Default
@@ -247,19 +250,14 @@ struct PriceResponse {
 }
 
 let client = Client::new();
-let payload = sonic_rs::json!({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "public/get_order_book",
-    "params": {
-        "instrument_name": "BTC-PERPETUAL",
-    },
-});
+let payload = bytes::Bytes::from_static(
+    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
+);
 
 let candles: PriceResponse = client
     .execute_json_checked(
         RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
-            .with_body(sonic_rs::to_vec(&payload)?),
+            .with_body(payload),
     )
     .await
     .expect("production request should parse into typed payload");
@@ -277,21 +275,17 @@ struct PriceResponse {
 }
 
 let client = Client::new();
-let payload = sonic_rs::json!({
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "public/get_order_book",
-    "params": {
-        "instrument_name": "BTC-PERPETUAL",
-    },
-});
+let payload = bytes::Bytes::from_static(
+    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
+);
 
 let request = RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
-    .with_body(sonic_rs::to_vec(&payload)?)
-    .with_retry_on_statuses((400u16..500u16).chain(std::iter::once(503u16)), 2); // retry all 4xx plus 503
+    .with_body(payload)
+    .with_retry_on_4xx(2)
+    .with_retry_on_statuses_extend([503], 2); // retry all 4xx plus 503
 
 let candles: PriceResponse = client
     .execute_json_checked(request)
     .await
-    .expect("request should retry up to 2 times on 429/503");
+    .expect("request should retry up to 2 times on all 4xx statuses and 503");
 ```

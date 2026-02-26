@@ -61,6 +61,35 @@ fn request_timeout_defaults_to_two_seconds_and_is_overridable() {
     );
 }
 
+#[test]
+fn retry_helpers_build_expected_retry_policy() {
+    let request = RestRequest::get("https://api.example.com/retry")
+        .with_retry_on_4xx(2)
+        .with_retry_on_statuses_extend([503], 2);
+
+    let policy = request
+        .retry_policy
+        .expect("retry policy should be configured");
+    assert_eq!(policy.max_retries, 2);
+    assert!(policy.statuses.contains(&400));
+    assert!(policy.statuses.contains(&499));
+    assert!(policy.statuses.contains(&503));
+}
+
+#[test]
+fn retry_helper_any_non_2xx_excludes_2xx() {
+    let request = RestRequest::get("https://api.example.com/retry").with_retry_on_any_non_2xx(1);
+    let policy = request
+        .retry_policy
+        .expect("retry policy should be configured");
+
+    assert!(policy.statuses.contains(&101));
+    assert!(policy.statuses.contains(&301));
+    assert!(policy.statuses.contains(&503));
+    assert!(!policy.statuses.contains(&200));
+    assert!(!policy.statuses.contains(&250));
+}
+
 #[tokio::test]
 async fn execute_json_checked_retries_configured_status_then_succeeds() {
     #[derive(Debug, Deserialize)]
@@ -308,7 +337,7 @@ async fn parse_error_is_exposed_as_parse_error_kind() {
 }
 
 #[tokio::test]
-async fn post_json_uses_serialization_and_returns_mock_response() {
+async fn post_response_with_bytes_returns_mock_response() {
     let adapter = MockRestAdapter::new();
     adapter.queue_post_response(
         "https://api.example.com/echo",
@@ -317,7 +346,10 @@ async fn post_json_uses_serialization_and_returns_mock_response() {
     let transport = Client::with_transport(adapter);
 
     let response = transport
-        .post_json_response("https://api.example.com/echo", &[("value", "ok")])
+        .post_response(
+            "https://api.example.com/echo",
+            Bytes::from_static(br#"{"value":"ok"}"#),
+        )
         .await
         .expect("mock response should be returned");
 
