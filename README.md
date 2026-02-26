@@ -133,17 +133,14 @@ let _ = MockResponse::json_error(
 let _ = MockResponse::text(400, "invalid request body");
 ```
 
-## Basic usage
+## Mocking Example - Success
 
 ```rust
 use shared_restapi::{
     Client,
-    MockBehavior,
-    MockBehaviorPlan,
     MockResponse,
     MockRestAdapter,
     RestRequest,
-    RestErrorKind,
 };
 use serde::Deserialize;
 
@@ -173,12 +170,21 @@ assert_eq!(
     }
 );
 
-// Failure path: controlled rejected mock response
+```
+
+## Mocking Example - Fail
+
+```rust
+use shared_restapi::{
+    Client,
+    MockRestAdapter,
+    RestErrorKind,
+    RestRequest,
+    MockResponse,
+};
+
 let transport = MockRestAdapter::new();
-transport.queue_get_response(
-    "https://api.example.com/v1/ping",
-    MockResponse::text(503, "rate limited"),
-);
+transport.queue_get_response("https://api.example.com/v1/ping", MockResponse::text(503, "rate limited"));
 let client = Client::with_transport(transport);
 let fail = client
     .execute_json_checked::<PingResponse>(RestRequest::get("https://api.example.com/v1/ping"))
@@ -186,18 +192,6 @@ let fail = client
     .expect_err("mocked rejection should be surfaced");
 assert_eq!(fail.kind(), RestErrorKind::Rejected);
 assert_eq!(fail.is_retryable(), false);
-
-// Failure path: mocked transport-level error from behavior plan
-let mut behavior_plan = MockBehaviorPlan::default();
-behavior_plan.push(MockBehavior::connect_error("dns failure", None, true));
-let transport = MockRestAdapter::with_behavior_plan(behavior_plan);
-let client = Client::with_transport(transport);
-let fail = client
-    .execute(RestRequest::get("https://api.example.com/v1/ping"))
-    .await
-    .expect_err("connect error should be surfaced");
-assert_eq!(fail.kind(), RestErrorKind::Connect);
-assert_eq!(fail.is_retryable(), true);
 ```
 
 ## Production usage
