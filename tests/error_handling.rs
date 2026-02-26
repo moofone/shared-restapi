@@ -287,17 +287,20 @@ async fn allocation_profile_is_measurable_for_execute_json_checked() {
         .json::<Vec<u32>>()
         .expect("json parse should succeed");
     assert_eq!(parsed, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    let execute_allocation_count = take_allocs();
-    assert!(execute_allocation_count > 0);
+    let direct_slice_allocation_count = take_allocs();
+    assert!(direct_slice_allocation_count > 0);
 
     reset_alloc_counter();
-    let copied_body = payload.to_vec();
-    let _copied_parse: Vec<u32> =
-        sonic_rs::from_slice(&copied_body).expect("copied body parse should work");
-    let copied_allocation_count = take_allocs();
+    let parsed_by_slice: Vec<u32> = sonic_rs::from_slice(payload).expect("parse from byte slice should work");
+    assert_eq!(parsed_by_slice, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    let from_slice_allocation_count = take_allocs();
 
     eprintln!(
-        "allocation profile: direct parse={execute_allocation_count}, copied to_vec={copied_allocation_count}"
+        "allocation profile: direct response json parse={direct_slice_allocation_count}, parse from borrowed bytes={from_slice_allocation_count}"
+    );
+    assert!(
+        from_slice_allocation_count <= direct_slice_allocation_count,
+        "byte-slice parse should not require more allocations than RestResponse::json: response {direct_slice_allocation_count}, slice {from_slice_allocation_count}"
     );
 }
 

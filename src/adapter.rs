@@ -356,7 +356,7 @@ impl Client {
     where
         T: DeserializeOwned,
     {
-        self.execute(request).await?.json::<T>()
+        self.execute_json_direct(request).await
     }
 
     pub async fn execute_json_direct<T>(&self, request: RestRequest) -> RestResult<T>
@@ -371,7 +371,7 @@ impl Client {
     where
         T: DeserializeOwned,
     {
-        self.execute_checked(request).await?.json::<T>()
+        self.execute_json_checked_direct(request).await
     }
 
     pub async fn execute_json_checked_direct<T>(&self, request: RestRequest) -> RestResult<T>
@@ -381,7 +381,12 @@ impl Client {
         let (status, body, _elapsed) = self.transport.execute_raw(request).await?;
         if !(200..300).contains(&status) {
             let retryable = (500..600).contains(&status);
-            return Err(RestError::rejected(status, format!("request rejected: status={status}"), retryable));
+            let body_excerpt = String::from_utf8_lossy(&body);
+            return Err(RestError::rejected(
+                status,
+                format!("request rejected: status={} body={}", status, body_excerpt),
+                retryable,
+            ));
         }
         from_slice(&body).map_err(RestError::from)
     }

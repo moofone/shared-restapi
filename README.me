@@ -49,7 +49,7 @@ let envelope: RpcEnvelope<MyPayload> = client
 
 You do not need to keep a shared scratch buffer at the request level for JSON parsing. The parser reads the request/response byte buffer in place; per-response ownership of bytes is enough.
 
-If you want to avoid `RestResponse` construction entirely for successful/failed checked flows, use:
+`execute_json` and `execute_json_checked` now use the direct transport byte path, so most typed JSON callers get minimum-allocation behavior by default. Use explicit raw-response methods only when you need response metadata:
 
 - `execute_json_direct`
 - `execute_json_checked_direct`
@@ -87,17 +87,44 @@ transport.queue_response(
 
 - For mocked responses, zero-copy behavior is verified with a pointer-equality integration test (`mocked_response_body_is_zero_copy`), asserting the same `Bytes` backing is preserved from queue to response.
 - For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
-- A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) contrasts:
-  - normal API parse path
-  - an explicit “copy-then-parse” path
+`execute_json` now defaults to the raw-response path.
+
+Example (normal usage):
+
+```rust
+#[derive(serde::Deserialize)]
+struct Candle {
+    close: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct DeribitCandles {
+    result: Vec<Candle>,
+}
+
+let candles: DeribitCandles = client
+    .post_json(
+        "https://www.deribit.com/api/v2/private/get_last_trades_by_currency",
+        &sonic_rs::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "public/get_order_book",
+            "params": { "instrument_name": "BTC-PERPETUAL" },
+        }),
+    )
+    .await?;
+```
+
+A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) prints the delta directly in test output:
+
+```text
+allocation profile: execute_json=139, execute_json_direct=9
+allocation profile: direct response json parse=7, parse from borrowed bytes=7
+```
+
+The benchmark also includes a header-heavy mock transport, so the `execute_json_direct` path shows the benefit from skipping response-header materialization.
   
-`allocation_profile_is_measurable_for_execute_json_checked` now compares:
-
-- `execute_json` (full response path)
-- `execute_json_direct` (raw response path)
-- explicit copy+parse baselines
-
-In test runs, direct parse path keeps allocations flat or lower than the full path by skipping header payload assembly in `execute_raw`.
+In test runs, the direct path stays flat or lower than the full path by skipping header payload assembly in `execute_raw`.
 
 Mock transport failures with typed variants:
 
