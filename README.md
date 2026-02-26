@@ -81,7 +81,6 @@ transport.queue_response(
 
 ## Allocation notes
 
-- For mocked responses, zero-copy behavior is verified with a pointer-equality integration test (`mocked_response_body_is_zero_copy`), asserting the same `Bytes` backing is preserved from queue to response.
 - For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
 `execute_json` now defaults to the raw-response path.
 
