@@ -10,16 +10,6 @@ Rate limiting is intentionally layered separately and should be composed with
 - a simple `Client` facade for request execution
 - a deterministic in-memory `MockRestAdapter` for fully controlled tests
 
-## Zero-allocation / zero-copy behavior
-
-The crate is designed to minimize copies on the hot path:
-
-- request/response payloads use `bytes::Bytes`
-- response bodies are exposed as `RestBytes` (`Bytes`) and only deserialized on demand
-- helpers like `RestResponse::json(...)` parse from an existing byte buffer using `sonic-rs`, without an intermediate `String` allocation
-
-This keeps allocations minimal and avoids repeated body copying in normal and mocked flows.
-
 ### Parse path
 
 `RestResponse::json::<T>(&self)` parses directly from the response bytes with `sonic-rs`:
