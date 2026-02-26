@@ -136,17 +136,68 @@ let _ = MockResponse::text(400, "invalid request body");
 ## Basic usage
 
 ```rust
-use shared_restapi::{Client, RestRequest, MockRestAdapter, MockResponse, MockBehaviorPlan, RestTransport};
+use shared_restapi::{
+    Client,
+    MockBehavior,
+    MockBehaviorPlan,
+    MockResponse,
+    MockRestAdapter,
+    RestRequest,
+    RestErrorKind,
+};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct PingResponse {
+    ok: bool,
+    request_id: String,
+}
 
 let transport = MockRestAdapter::new();
 transport.queue_get_response(
     "https://api.example.com/v1/ping",
-    MockResponse::new(200, b"{\"ok\":true}".as_slice()),
+    MockResponse::new(200, b"{\"ok\":true,\"request_id\":\"ping-42\"}"),
+);
+let client = Client::with_transport(transport);
+
+let ok: PingResponse = client
+    .execute_json_checked::<PingResponse>(RestRequest::get("https://api.example.com/v1/ping"))
+    .await
+    .expect("mocked success path");
+
+assert_eq!(
+    ok,
+    PingResponse {
+        ok: true,
+        request_id: "ping-42".to_string()
+    }
 );
 
+// Failure path: controlled rejected mock response
+let transport = MockRestAdapter::new();
+transport.queue_get_response(
+    "https://api.example.com/v1/ping",
+    MockResponse::text(503, "rate limited"),
+);
 let client = Client::with_transport(transport);
-let response = client.get_url("https://api.example.com/v1/ping").await.unwrap();
-assert_eq!(response.status(), 200);
+let fail = client
+    .execute_json_checked::<PingResponse>(RestRequest::get("https://api.example.com/v1/ping"))
+    .await
+    .expect_err("mocked rejection should be surfaced");
+assert_eq!(fail.kind(), RestErrorKind::Rejected);
+assert_eq!(fail.is_retryable(), false);
+
+// Failure path: mocked transport-level error from behavior plan
+let mut behavior_plan = MockBehaviorPlan::default();
+behavior_plan.push(MockBehavior::connect_error("dns failure", None, true));
+let transport = MockRestAdapter::with_behavior_plan(behavior_plan);
+let client = Client::with_transport(transport);
+let fail = client
+    .execute(RestRequest::get("https://api.example.com/v1/ping"))
+    .await
+    .expect_err("connect error should be surfaced");
+assert_eq!(fail.kind(), RestErrorKind::Connect);
+assert_eq!(fail.is_retryable(), true);
 ```
 
 ## Production usage
