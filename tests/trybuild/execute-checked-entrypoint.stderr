@@ -1,0 +1,10 @@
+error[E0624]: method `execute_checked` is private
+ --> tests/trybuild/execute-checked-entrypoint.rs:6:77
+  |
+6 |     let _response: Result<RestResponse, shared_restapi::RestError> = client.execute_checked(
+  |                                                                             ^^^^^^^^^^^^^^^ private method
+  |
+ ::: src/adapter.rs
+  |
+  |     async fn execute_checked(&self, request: RestRequest) -> RestResult<RestResponse> {
+  |     --------------------------------------------------------------------------------- private method defined here

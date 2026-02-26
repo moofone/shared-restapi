@@ -6,7 +6,11 @@ Rate limiting is intentionally layered separately and should be composed with
 `shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
 
 `shared-restapi` defaults typed JSON calls to the direct parsing path. The raw
-`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*` / `post_json*`) for JSON responses and `*_response` methods for explicit raw transport metadata.
+`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*` / `post_json_direct` / `post_json_checked_direct`) for JSON responses and `*_response` methods for explicit raw transport metadata.
+
+Production requests use a default timeout of `2s`. You can override per request with `RestRequest::with_timeout(...)`.
+
+Retries are opt-in and request-scoped. No retries occur unless you set retry policy on the request (`with_retry_on_status` or `with_retry_on_statuses`).
 
 - a concrete `ReqwestTransport` for production
 - a `RestTransport` trait for transport abstraction
@@ -34,6 +38,15 @@ struct RpcEnvelope<T> {
 let envelope: RpcEnvelope<MyPayload> = client
     .execute_json_checked(RestRequest::post("https://api.example.com/rpc").with_body(payload))
     .await?;
+```
+
+Retry example for specific non-200 status:
+
+```rust
+let request = RestRequest::get("https://api.example.com/v1/data")
+    .with_retry_on_status(503, 2); // initial try + up to 2 retries on 503
+
+let payload: MyPayload = client.execute_json_checked(request).await?;
 ```
 
 You do not need to keep a shared scratch buffer at the request level for JSON parsing. The parser reads the request/response byte buffer in place; per-response ownership of bytes is enough.
@@ -77,7 +90,7 @@ transport.queue_response(
     MockResponse::text(200, r#"{"ok":true}"#),
 );
 
-    transport.queue_get_response(
+transport.queue_get_response(
     "https://api.example.com/v1/ping",
     MockResponse::text_error(500, "internal backend error"),
 );
@@ -217,10 +230,10 @@ assert_eq!(fail.kind(), RestErrorKind::Rejected);
 assert_eq!(fail.is_retryable(), false);
 ```
 
-## Example - Production Use
+## Example - Production Default
 
 ```rust
-use shared_restapi::Client;
+use shared_restapi::{Client, RestRequest};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -234,7 +247,7 @@ struct PriceResponse {
 }
 
 let client = Client::new();
-let payload = serde_json::json!({
+let payload = sonic_rs::json!({
     "jsonrpc": "2.0",
     "id": 1,
     "method": "public/get_order_book",
@@ -244,10 +257,41 @@ let payload = serde_json::json!({
 });
 
 let candles: PriceResponse = client
-    .post_json_direct(
-        "https://www.deribit.com/api/v2/public/get_order_book",
-        &payload,
+    .execute_json_checked(
+        RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
+            .with_body(sonic_rs::to_vec(&payload)?),
     )
     .await
     .expect("production request should parse into typed payload");
+```
+
+## Example - Production With Retry
+
+```rust
+use shared_restapi::{Client, RestRequest};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct PriceResponse {
+    result: sonic_rs::Value,
+}
+
+let client = Client::new();
+let payload = sonic_rs::json!({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "public/get_order_book",
+    "params": {
+        "instrument_name": "BTC-PERPETUAL",
+    },
+});
+
+let request = RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
+    .with_body(sonic_rs::to_vec(&payload)?)
+    .with_retry_on_statuses([429, 503], 2);
+
+let candles: PriceResponse = client
+    .execute_json_checked(request)
+    .await
+    .expect("request should retry up to 2 times on 429/503");
 ```

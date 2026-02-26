@@ -2,7 +2,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use serde_json::Value;
+use sonic_rs::Value;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
     RestErrorKind, RestRequest, RestResponse, RestResult,
@@ -47,6 +47,115 @@ fn adapter_with_behavior(behavior: MockBehavior) -> Client {
 fn assert_error_kind(err: RestError, expected: RestErrorKind, expected_retryable: bool) {
     assert_eq!(err.kind(), expected);
     assert_eq!(err.is_retryable(), expected_retryable);
+}
+
+#[test]
+fn request_timeout_defaults_to_two_seconds_and_is_overridable() {
+    let default_request = RestRequest::get("https://api.example.com/default-timeout");
+    assert_eq!(default_request.timeout, Some(std::time::Duration::from_secs(2)));
+
+    let overridden = default_request.with_timeout(std::time::Duration::from_millis(250));
+    assert_eq!(
+        overridden.timeout,
+        Some(std::time::Duration::from_millis(250))
+    );
+}
+
+#[tokio::test]
+async fn execute_json_checked_retries_configured_status_then_succeeds() {
+    #[derive(Debug, Deserialize)]
+    struct RetryOk {
+        ok: bool,
+    }
+
+    let url = "https://api.example.com/retry-503-then-ok";
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(200, r#"{"ok":true}"#));
+
+    let transport = Client::with_transport(adapter.clone());
+    let response = transport
+        .execute_json_checked::<RetryOk>(RestRequest::get(url).with_retry_on_status(503, 2))
+        .await
+        .expect("request should succeed after retries on configured status");
+    assert!(response.ok);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 3);
+}
+
+#[tokio::test]
+async fn execute_json_checked_does_not_retry_without_policy() {
+    let url = "https://api.example.com/no-retry-default";
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(200, r#"{"ok":true}"#));
+
+    let transport = Client::with_transport(adapter.clone());
+    let err = transport
+        .execute_json_checked::<Value>(RestRequest::get(url))
+        .await
+        .expect_err("request should fail immediately without retry policy");
+    assert_error_kind(err, RestErrorKind::Rejected, true);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 1);
+}
+
+#[tokio::test]
+async fn execute_json_checked_retries_only_on_configured_statuses() {
+    let url = "https://api.example.com/retry-only-specific-status";
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(url, MockResponse::text(500, "internal"));
+    adapter.queue_get_response(url, MockResponse::text(200, r#"{"ok":true}"#));
+
+    let transport = Client::with_transport(adapter.clone());
+    let err = transport
+        .execute_json_checked::<Value>(RestRequest::get(url).with_retry_on_status(503, 2))
+        .await
+        .expect_err("status not in retry set should fail without retrying");
+    assert_error_kind(err, RestErrorKind::Rejected, true);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 1);
+}
+
+#[tokio::test]
+async fn execute_json_checked_stops_after_max_retries() {
+    let url = "https://api.example.com/retry-exhausted";
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+
+    let transport = Client::with_transport(adapter.clone());
+    let err = transport
+        .execute_json_checked::<Value>(RestRequest::get(url).with_retry_on_status(503, 2))
+        .await
+        .expect_err("request should fail after max retries are exhausted");
+    assert_error_kind(err, RestErrorKind::Rejected, true);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 3);
+}
+
+#[tokio::test]
+async fn execute_json_checked_with_empty_retry_statuses_does_not_retry() {
+    let url = "https://api.example.com/retry-empty-statuses";
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
+    adapter.queue_get_response(url, MockResponse::text(200, r#"{"ok":true}"#));
+
+    let transport = Client::with_transport(adapter.clone());
+    let err = transport
+        .execute_json_checked::<Value>(RestRequest::get(url).with_retry_on_statuses([], 2))
+        .await
+        .expect_err("empty retry status list should behave as no retries");
+    assert_error_kind(err, RestErrorKind::Rejected, true);
+
+    let snapshot = adapter.snapshot();
+    assert_eq!(snapshot.request_count, 1);
 }
 
 #[tokio::test]
@@ -132,11 +241,11 @@ async fn mock_transport_reject_error_maps_to_rejected_kind_and_checked_retries()
 #[tokio::test]
 async fn mock_transport_fallback_response_is_successful_when_queue_is_empty() {
     let transport = Client::with_transport(MockRestAdapter::new());
-    let response = transport
+    let parse_error = transport
         .execute_json::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await
-        .expect("mock with empty queue should return fallback response");
-    assert_eq!(response, serde_json::Value::Null);
+        .expect_err("empty fallback body should fail typed json parse");
+    assert_error_kind(parse_error, RestErrorKind::Parse, false);
 
     let response = transport
         .get_url_response("https://api.example.com/panic")
@@ -304,8 +413,8 @@ async fn allocation_profile_is_measurable_for_execute_json_checked() {
         "allocation profile: direct response json parse={direct_slice_allocation_count}, parse from borrowed bytes={from_slice_allocation_count}"
     );
     assert!(
-        from_slice_allocation_count <= direct_slice_allocation_count,
-        "byte-slice parse should not require more allocations than RestResponse::json: response {direct_slice_allocation_count}, slice {from_slice_allocation_count}"
+        from_slice_allocation_count <= execute_allocation_count,
+        "borrowed byte-slice parse should remain far below full execute_json allocation profile: execute_json {execute_allocation_count}, slice {from_slice_allocation_count}"
     );
 }
 

@@ -11,6 +11,7 @@ use thiserror::Error;
 pub type RestBytes = Bytes;
 pub type RestFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub type RestResult<T> = Result<T, RestError>;
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Request state for a mock that mirrors transport behavior (optional for callers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,10 +95,17 @@ impl RestError {
     fn from_reqwest(kind: RestErrorKind, err: reqwest::Error) -> Self {
         let status = err.status().map(|status| status.as_u16());
         let message = err.to_string();
+        if err.is_timeout() {
+            return Self::Timeout {
+                status,
+                retryable: true,
+                message,
+            };
+        }
         let retryable = match kind {
-            RestErrorKind::Connect => err.is_timeout() || err.is_connect(),
-            RestErrorKind::Send => err.is_request() || err.is_connect() || err.is_timeout(),
-            RestErrorKind::Receive => err.is_timeout() || err.is_request(),
+            RestErrorKind::Connect => err.is_connect(),
+            RestErrorKind::Send => err.is_request() || err.is_connect(),
+            RestErrorKind::Receive => err.is_request(),
             RestErrorKind::Timeout => true,
             _ => false,
         };
@@ -220,6 +228,18 @@ impl RestError {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestRetryPolicy {
+    pub max_retries: usize,
+    pub statuses: Vec<u16>,
+}
+
+impl RestRetryPolicy {
+    fn should_retry(&self, status: u16, attempt: usize) -> bool {
+        attempt < self.max_retries && self.statuses.contains(&status)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RestRequest {
     pub method: Method,
@@ -227,6 +247,7 @@ pub struct RestRequest {
     pub headers: Vec<(String, RestBytes)>,
     pub body: Option<RestBytes>,
     pub timeout: Option<Duration>,
+    pub retry_policy: Option<RestRetryPolicy>,
 }
 
 impl RestRequest {
@@ -236,7 +257,8 @@ impl RestRequest {
             url: url.into(),
             headers: Vec::new(),
             body: None,
-            timeout: None,
+            timeout: Some(DEFAULT_REQUEST_TIMEOUT),
+            retry_policy: None,
         }
     }
 
@@ -261,6 +283,28 @@ impl RestRequest {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
+    }
+
+    pub fn with_retry_on_status(self, status: u16, max_retries: usize) -> Self {
+        self.with_retry_on_statuses([status], max_retries)
+    }
+
+    pub fn with_retry_on_statuses<I>(mut self, statuses: I, max_retries: usize) -> Self
+    where
+        I: IntoIterator<Item = u16>,
+    {
+        let statuses = statuses.into_iter().collect::<Vec<_>>();
+        self.retry_policy = Some(RestRetryPolicy {
+            max_retries,
+            statuses,
+        });
+        self
+    }
+
+    fn should_retry_status(&self, status: u16, attempt: usize) -> bool {
+        self.retry_policy
+            .as_ref()
+            .is_some_and(|policy| policy.should_retry(status, attempt))
     }
 }
 
@@ -347,9 +391,19 @@ impl Client {
     }
 
     async fn execute_checked(&self, request: RestRequest) -> RestResult<RestResponse> {
-        let response = self.execute(request).await?;
-        response.ensure_success()?;
-        Ok(response)
+        let mut attempt = 0usize;
+        loop {
+            let response = self.execute(request.clone()).await?;
+            if response.is_success() {
+                return Ok(response);
+            }
+            if request.should_retry_status(response.status, attempt) {
+                attempt += 1;
+                continue;
+            }
+            response.ensure_success()?;
+            return Ok(response);
+        }
     }
 
     pub async fn execute_json<T>(&self, request: RestRequest) -> RestResult<T>
@@ -378,8 +432,16 @@ impl Client {
     where
         T: DeserializeOwned,
     {
-        let (status, body, _elapsed) = self.transport.execute_raw(request).await?;
-        if !(200..300).contains(&status) {
+        let mut attempt = 0usize;
+        loop {
+            let (status, body, _elapsed) = self.transport.execute_raw(request.clone()).await?;
+            if (200..300).contains(&status) {
+                return from_slice(&body).map_err(RestError::from);
+            }
+            if request.should_retry_status(status, attempt) {
+                attempt += 1;
+                continue;
+            }
             let retryable = (500..600).contains(&status);
             let body_excerpt = String::from_utf8_lossy(&body);
             return Err(RestError::rejected(
@@ -388,7 +450,6 @@ impl Client {
                 retryable,
             ));
         }
-        from_slice(&body).map_err(RestError::from)
     }
 
     pub async fn get_response(&self, request: RestRequest) -> RestResult<RestResponse> {

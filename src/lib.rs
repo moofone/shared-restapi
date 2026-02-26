@@ -10,7 +10,7 @@ pub use reqwest::Method;
 
 pub use adapter::{
     Client, ReqwestTransport, RestBytes, RestError, RestErrorKind, RestFuture, RestRequest, RestResponse,
-    RestResult, RestTransport, RestTransportState,
+    RestResult, RestRetryPolicy, RestTransport, RestTransportState,
 };
 pub use mock::{
     MockBehavior, MockBehaviorPlan, MockOperation, MockResponse, MockRestAdapter,

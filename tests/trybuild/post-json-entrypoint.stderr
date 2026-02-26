@@ -1,0 +1,10 @@
+error[E0599]: no method named `post_json` found for struct `Client` in the current scope
+  --> tests/trybuild/post-json-entrypoint.rs:13:16
+   |
+13 |         client.post_json("https://api.example.com/v1/data", &payload);
+   |                ^^^^^^^^^
+   |
+help: there is a method `post_json_direct` with a similar name
+   |
+13 |         client.post_json_direct("https://api.example.com/v1/data", &payload);
+   |                         +++++++

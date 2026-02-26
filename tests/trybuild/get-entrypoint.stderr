@@ -1,0 +1,5 @@
+error[E0599]: no method named `get` found for struct `Client` in the current scope
+ --> tests/trybuild/get-entrypoint.rs:6:16
+  |
+6 |         client.get("https://api.example.com/v1/data");
+  |                ^^^ method not found in `Client`
