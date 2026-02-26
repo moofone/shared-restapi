@@ -1,13 +1,8 @@
 # shared-restapi
 
-Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests.
-Designed to minimize allocations while keeping a simple, production-friendly adapter surface.
-
+Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests. Designed to minimize allocations while keeping a simple, production-friendly adapter surface.
 Rate limiting is intentionally layered separately and should be composed with
 `https://github.com/moofone/shared-rate_limiter` in callers that need request pacing.
-
-## Purpose
-
 `shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
 
 - a concrete `ReqwestTransport` for production
