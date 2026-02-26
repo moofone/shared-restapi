@@ -10,8 +10,8 @@ use serde::Serialize;
 use sonic_rs::to_vec;
 
 use super::adapter::{
-    RestBytes, RestError, RestErrorKind, RestFuture, RestRequest, RestResponse, RestResult,
-    RestTransport, RestTransportState,
+    RestBytes, RestError, RestErrorKind, RestFuture, RestRawResponse, RestRequest, RestResponse,
+    RestResult, RestTransport, RestTransportState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -601,6 +601,133 @@ impl Default for MockRestAdapter {
 }
 
 impl RestTransport for MockRestAdapter {
+    fn execute_raw(&self, request: RestRequest) -> RestFuture<RestResult<RestRawResponse>> {
+        let adapter = self.clone();
+        Box::pin(async move {
+            let behavior = adapter.pop_behavior(MockOperation::Request);
+            Self::apply_delay(&behavior);
+
+            let start = Instant::now();
+            adapter.push_outbound_log(request.clone());
+
+            let mut state = adapter
+                .state
+                .lock()
+                .expect("mock-restapi mutex poisoned while updating state before execute_raw");
+            state.request_count += 1;
+            state.last_url = Some(request.url.clone());
+            state.state = RestTransportState::Busy;
+            state.last_error = None;
+            drop(state);
+
+            match behavior {
+                MockBehavior::Drop => {
+                    let error = adapter.error(
+                        RestErrorKind::Timeout,
+                        None,
+                        "mock transport dropped response",
+                        false,
+                    );
+                    return Err(error);
+                }
+                MockBehavior::ConnectError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Connect, status, reason, retryable));
+                }
+                MockBehavior::SendError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Send, status, reason, retryable));
+                }
+                MockBehavior::ReceiveError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Receive, status, reason, retryable));
+                }
+                MockBehavior::TimeoutError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Timeout, status, reason, retryable));
+                }
+                MockBehavior::InternalError { reason } => {
+                    return Err(adapter.error(RestErrorKind::Internal, None, reason, false));
+                }
+                MockBehavior::Reject { status, reason } => {
+                    return Err(adapter.error(RestErrorKind::Rejected, Some(status), reason, true));
+                }
+                MockBehavior::Delay(_) | MockBehavior::Pass | MockBehavior::Replay(_) => {}
+            }
+
+            let maybe_response = if let MockBehavior::Replay(list) = behavior {
+                let mut state = adapter
+                    .state
+                    .lock()
+                    .expect("mock-restapi mutex poisoned while enqueueing replay responses");
+                state.default_response_queue.extend(list.into_iter());
+                drop(state);
+                adapter.next_default_response(&request)
+            } else {
+                adapter.next_default_response(&request)
+            };
+
+            let (status, body, elapsed) = match maybe_response {
+                Some(response) => {
+                    let elapsed = start.elapsed();
+                    let status = response.status;
+                    let body = response.body;
+
+                    adapter.push_inbound_log(RestResponse {
+                        status,
+                        headers: Vec::new(),
+                        body: body.clone(),
+                        elapsed,
+                    });
+                    {
+                        let mut state = adapter
+                            .state
+                            .lock()
+                            .expect(
+                                "mock-restapi mutex poisoned while recording inbound raw response",
+                            );
+                        state.last_status = Some(status);
+                        state.state = RestTransportState::Idle;
+                        state.elapsed_total += elapsed;
+                    }
+                    (status, body, elapsed)
+                }
+                None => {
+                    let elapsed = start.elapsed();
+                    let body = Bytes::new();
+                    adapter.push_inbound_log(RestResponse {
+                        status: 200,
+                        headers: Vec::new(),
+                        body: body.clone(),
+                        elapsed,
+                    });
+                    {
+                        let mut state = adapter.state.lock().expect(
+                            "mock-restapi mutex poisoned while recording fallback raw response",
+                        );
+                        state.last_status = Some(200);
+                        state.state = RestTransportState::Idle;
+                    }
+                    (200, body, elapsed)
+                }
+            };
+
+            Ok((status, body, elapsed))
+        })
+    }
+
     fn execute(&self, request: RestRequest) -> RestFuture<RestResult<RestResponse>> {
         let adapter = self.clone();
         Box::pin(async move {
