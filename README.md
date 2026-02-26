@@ -46,28 +46,6 @@ transport.queue_get_response(
 - For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
 `execute_json` now defaults to the raw-response path.
 
-Example (normal usage):
-
-```rust
-#[derive(serde::Deserialize)]
-struct Candle {
-    close: f64,
-}
-
-#[derive(serde::Deserialize)]
-struct DeribitCandles {
-    result: Vec<Candle>,
-}
-
-let payload = bytes::Bytes::from_static(
-    br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
-);
-
-let candles: DeribitCandles = client
-    .execute_json_checked(RestRequest::post("https://www.deribit.com/api/v2/private/get_last_trades_by_currency").with_body(payload))
-    .await?;
-```
-
 A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) prints the delta directly in test output (sample):
 
 ```text
@@ -78,28 +56,6 @@ allocation profile: direct response json parse=7, parse from borrowed bytes=7
 The benchmark also includes a header-heavy mock transport, so the `execute_json_direct` path shows the benefit from skipping response-header materialization.
   
 In test runs, the direct path stays flat or lower than the full path by skipping header payload assembly in `execute_raw`.
-
-Mock transport failures with typed variants:
-
-```rust
-let mut behavior_plan = MockBehaviorPlan::default();
-behavior_plan
-    .push(MockBehavior::connect_error("dns failure", None, true))
-    .push(MockBehavior::timeout_error("upstream timeout", Some(504), true))
-    .push(MockBehavior::reject(503, "rate limited"));
-
-let transport = MockRestAdapter::with_behavior_plan(behavior_plan);
-```
-
-Error response helpers:
-
-```rust
-let _ = MockResponse::json_error(
-    429,
-    &sonic_rs::json!({"error":"rate_limited","message":"retry later"}),
-);
-let _ = MockResponse::text(400, "invalid request body");
-```
 
 ## Example - Mock Success
 
