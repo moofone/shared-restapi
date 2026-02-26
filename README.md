@@ -288,7 +288,7 @@ let payload = sonic_rs::json!({
 
 let request = RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
     .with_body(sonic_rs::to_vec(&payload)?)
-    .with_retry_on_statuses([429, 503], 2);
+    .with_retry_on_statuses((400u16..500u16).chain(std::iter::once(503u16)), 2); // retry all 4xx plus 503
 
 let candles: PriceResponse = client
     .execute_json_checked(request)
