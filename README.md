@@ -47,7 +47,16 @@ You do not need to keep a shared scratch buffer at the request level for JSON pa
 
 These methods parse directly from transport bytes and bypass response-header materialization on the fast path where possible.
 
-`execute`, `get`, and `post` are preserved only for callers that need full `RestResponse` metadata; they are not part of the recommended typed JSON path.
+`get_response`, `post_response`, and `post_json_response` return `RestResponse` and are available when explicit transport metadata is needed. The fast typed JSON path is `execute_json*` / `post_json_direct`.
+
+The following entrypoints are intentionally unavailable in the public API to make slow/raw transport calls impossible:
+
+- `Client::execute`
+- `Client::execute_checked`
+- `Client::get`
+- `Client::post`
+- `Client::get_url`
+- `Client::post_json`
 
 ## Mocking
 
@@ -92,15 +101,17 @@ struct DeribitCandles {
     result: Vec<Candle>,
 }
 
+let payload = sonic_rs::json!({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "public/get_order_book",
+    "params": { "instrument_name": "BTC-PERPETUAL" },
+});
+
 let candles: DeribitCandles = client
-    .post_json(
+    .post_json_direct(
         "https://www.deribit.com/api/v2/private/get_last_trades_by_currency",
-        &sonic_rs::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "public/get_order_book",
-            "params": { "instrument_name": "BTC-PERPETUAL" },
-        }),
+        &payload,
     )
     .await?;
 ```
@@ -187,6 +198,13 @@ use shared_restapi::{
     RestRequest,
     MockResponse,
 };
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct PingResponse {
+    ok: bool,
+    request_id: String,
+}
 
 let transport = MockRestAdapter::new();
 transport.queue_get_response("https://api.example.com/v1/ping", MockResponse::text(503, "rate limited"));
@@ -202,7 +220,7 @@ assert_eq!(fail.is_retryable(), false);
 ## Example - Production Use
 
 ```rust
-use shared_restapi::{Client, RestRequest};
+use shared_restapi::Client;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -225,8 +243,8 @@ let payload = serde_json::json!({
     },
 });
 
-let response: PriceResponse = client
-    .post_json_checked(
+let candles: PriceResponse = client
+    .post_json_direct(
         "https://www.deribit.com/api/v2/public/get_order_book",
         &payload,
     )
