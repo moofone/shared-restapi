@@ -5,6 +5,9 @@ Rate limiting is intentionally layered separately and should be composed with
 `https://github.com/moofone/shared-rate_limiter` in callers that need request pacing.
 `shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
 
+`shared-restapi` defaults typed JSON calls to the direct parsing path. The raw
+`execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*` / `post_json*`) for JSON responses and `*_response` methods for explicit raw transport metadata.
+
 - a concrete `ReqwestTransport` for production
 - a `RestTransport` trait for transport abstraction
 - a simple `Client` facade for request execution

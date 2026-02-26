@@ -342,11 +342,11 @@ impl Client {
         }
     }
 
-    pub async fn execute(&self, request: RestRequest) -> RestResult<RestResponse> {
+    async fn execute(&self, request: RestRequest) -> RestResult<RestResponse> {
         self.transport.execute(request).await
     }
 
-    pub async fn execute_checked(&self, request: RestRequest) -> RestResult<RestResponse> {
+    async fn execute_checked(&self, request: RestRequest) -> RestResult<RestResponse> {
         let response = self.execute(request).await?;
         response.ensure_success()?;
         Ok(response)
@@ -391,15 +391,15 @@ impl Client {
         from_slice(&body).map_err(RestError::from)
     }
 
-    pub async fn get(&self, request: RestRequest) -> RestResult<RestResponse> {
+    pub async fn get_response(&self, request: RestRequest) -> RestResult<RestResponse> {
         self.execute(request).await
     }
 
-    pub async fn get_url(&self, url: impl Into<String>) -> RestResult<RestResponse> {
+    pub async fn get_url_response(&self, url: impl Into<String>) -> RestResult<RestResponse> {
         self.execute(RestRequest::get(url)).await
     }
 
-    pub async fn post(
+    pub async fn post_response(
         &self,
         url: impl Into<String>,
         body: impl Into<RestBytes>,
@@ -407,13 +407,13 @@ impl Client {
         self.execute(RestRequest::post(url).with_body(body)).await
     }
 
-    pub async fn post_json<T: Serialize>(
+    pub async fn post_json_response<T: Serialize>(
         &self,
         url: impl Into<String>,
         payload: &T,
     ) -> RestResult<RestResponse> {
         let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
-        self.post(url, body).await
+        self.post_response(url, body).await
     }
 
     pub async fn post_json_direct<TPayload: Serialize, TResponse>(

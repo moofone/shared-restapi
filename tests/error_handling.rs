@@ -2,6 +2,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
+use serde_json::Value;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
     RestErrorKind, RestRequest, RestResponse, RestResult,
@@ -52,7 +53,7 @@ fn assert_error_kind(err: RestError, expected: RestErrorKind, expected_retryable
 async fn mock_transport_connect_error_bubbles_with_connect_kind() {
     let transport = adapter_with_behavior(MockBehavior::connect_error("dns failed", None, true));
     let result = transport
-        .execute(RestRequest::get("https://api.example.com/panic"))
+        .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await;
 
     let err = result.expect_err("connect mock should fail");
@@ -63,7 +64,7 @@ async fn mock_transport_connect_error_bubbles_with_connect_kind() {
 async fn mock_transport_send_error_bubbles_with_send_kind() {
     let transport = adapter_with_behavior(MockBehavior::send_error("send failed", Some(0), false));
     let result = transport
-        .execute(RestRequest::get("https://api.example.com/panic"))
+        .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await;
 
     let err = result.expect_err("send mock should fail");
@@ -78,7 +79,7 @@ async fn mock_transport_receive_error_bubbles_with_receive_kind() {
         false,
     ));
     let result = transport
-        .execute(RestRequest::post("https://api.example.com/panic"))
+        .execute_json_checked::<Value>(RestRequest::post("https://api.example.com/panic"))
         .await;
 
     let err = result.expect_err("receive mock should fail");
@@ -94,13 +95,13 @@ async fn mock_transport_timeout_and_internal_errors_are_typed() {
     let transport = Client::with_transport(MockRestAdapter::with_behavior_plan(behavior_plan));
 
     let timeout_err = transport
-        .execute(RestRequest::get("https://api.example.com/panic"))
+        .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await
         .expect_err("timeout mock should fail");
     assert_error_kind(timeout_err, RestErrorKind::Timeout, true);
 
     let internal_err = transport
-        .execute(RestRequest::get("https://api.example.com/panic"))
+        .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await
         .expect_err("internal mock should fail");
     assert_error_kind(internal_err, RestErrorKind::Internal, false);
@@ -116,13 +117,13 @@ async fn mock_transport_reject_error_maps_to_rejected_kind_and_checked_retries()
 
     let request = RestRequest::get("https://api.example.com/panic");
     let execute_err = transport
-        .execute(request.clone())
+        .execute_json_checked::<Value>(request.clone())
         .await
         .expect_err("reject behavior should be surfaced");
     assert_error_kind(execute_err, RestErrorKind::Rejected, true);
 
     let checked_err = transport
-        .execute_checked(request)
+        .execute_json_checked::<Value>(request)
         .await
         .expect_err("checked execution should fail on rejected responses");
     assert_error_kind(checked_err, RestErrorKind::Rejected, true);
@@ -132,11 +133,15 @@ async fn mock_transport_reject_error_maps_to_rejected_kind_and_checked_retries()
 async fn mock_transport_fallback_response_is_successful_when_queue_is_empty() {
     let transport = Client::with_transport(MockRestAdapter::new());
     let response = transport
-        .execute(RestRequest::get("https://api.example.com/panic"))
+        .execute_json::<Value>(RestRequest::get("https://api.example.com/panic"))
         .await
         .expect("mock with empty queue should return fallback response");
+    assert_eq!(response, serde_json::Value::Null);
 
-    assert_eq!(response.status(), 200);
+    let response = transport
+        .get_url_response("https://api.example.com/panic")
+        .await
+        .expect("mock with empty queue should return fallback response");
     assert!(response.body().is_empty());
 }
 
@@ -168,7 +173,7 @@ async fn queue_error_payload_helpers_are_supported() {
 
     for (url, expected_status) in errors {
         let response = transport
-            .get_url(url)
+            .get_url_response(url)
             .await
             .expect("mock queue should return configured error response");
         assert_eq!(response.status(), expected_status);
@@ -203,7 +208,7 @@ async fn post_json_uses_serialization_and_returns_mock_response() {
     let transport = Client::with_transport(adapter);
 
     let response = transport
-        .post_json("https://api.example.com/echo", &[("value", "ok")])
+        .post_json_response("https://api.example.com/echo", &[("value", "ok")])
         .await
         .expect("mock response should be returned");
 
@@ -223,7 +228,7 @@ async fn mocked_response_body_is_zero_copy() {
     let transport = Client::with_transport(adapter);
 
     let response = transport
-        .get_url("https://api.example.com/zero-copy")
+        .get_url_response("https://api.example.com/zero-copy")
         .await
         .expect("mock response should be returned");
 
