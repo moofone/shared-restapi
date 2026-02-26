@@ -6,11 +6,13 @@
 pub mod adapter;
 pub mod mock;
 
+pub use reqwest::Method;
+
 pub use adapter::{
-    Client, Method, ReqwestTransport, RestBytes, RestError, RestErrorKind, RestFuture,
-    RestRequest, RestResponse, RestResult, RestTransport, RestTransportState,
+    Client, ReqwestTransport, RestBytes, RestError, RestErrorKind, RestFuture, RestRequest, RestResponse,
+    RestResult, RestTransport, RestTransportState,
 };
 pub use mock::{
-    MockBehavior, MockBehaviorPlan, MockOperation, MockRestAdapter, MockRestStateSnapshot, MockResponse,
-    MockScenario, MockScenarioStep, MockScenarioStepKind,
+    MockBehavior, MockBehaviorPlan, MockOperation, MockResponse, MockRestAdapter,
+    MockRestStateSnapshot, MockScenario, MockScenarioStep, MockScenarioStepKind,
 };

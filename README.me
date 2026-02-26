@@ -1,0 +1,131 @@
+# shared-restapi
+
+Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests.
+
+Rate limiting is intentionally layered separately and should be composed with
+`https://github.com/moofone/shared-rate_limiter` in callers that need request pacing.
+
+## Purpose
+
+`shared-restapi` provides a tiny abstraction for HTTP clients that mirrors the local adapter style used elsewhere in the workspace:
+
+- a concrete `ReqwestTransport` for production
+- a `RestTransport` trait for transport abstraction
+- a simple `Client` facade for request execution
+- a deterministic in-memory `MockRestAdapter` for fully controlled tests
+
+## Zero-allocation / zero-copy behavior
+
+The crate is designed to minimize copies on the hot path:
+
+- request/response payloads use `bytes::Bytes`
+- response bodies are exposed as `RestBytes` (`Bytes`) and only deserialized on demand
+- helpers like `RestResponse::json(...)` parse from an existing byte buffer using `sonic-rs`, without an intermediate `String` allocation
+
+This keeps allocations minimal and avoids repeated body copying in normal and mocked flows.
+
+### Parse path
+
+`RestResponse::json::<T>(&self)` parses directly from the response bytes with `sonic-rs`:
+
+- there is no intermediate `String` conversion
+- no explicit JSON AST or intermediate object-blob step
+- `T` is deserialized in one pass from `&[u8]`
+
+For JSON-RPC or typed API responses, this means you deserialize directly into your Rust result type in one shot:
+
+```rust
+#[derive(serde::Deserialize)]
+struct RpcEnvelope<T> {
+    jsonrpc: String,
+    id: u64,
+    result: T,
+}
+
+let envelope: RpcEnvelope<MyPayload> = client
+    .execute_json_checked(RestRequest::post("https://api.example.com/rpc").with_body(payload))
+    .await?;
+```
+
+You do not need to keep a shared scratch buffer at the request level for JSON parsing. The parser reads the request/response byte buffer in place; per-response ownership of bytes is enough.
+
+## Mocking
+
+The mock adapter supports deterministic behavior control for tests:
+
+- `Pass`, `Delay`, `Reject`, `Drop`, `Replay`, and explicit mock transport errors
+- queued default responses and per-route queued responses (`method + url`)
+- call snapshots and counters for assertions
+
+Use it when you need tests that assert exact transport behavior without outbound network calls.
+
+### Mocking examples
+
+Mock response (success and error payloads):
+
+```rust
+transport.queue_response(
+    MockResponse::text(200, r#"{"ok":true}"#),
+);
+
+    transport.queue_get_response(
+    "https://api.example.com/v1/ping",
+    MockResponse::text_error(500, "internal backend error"),
+);
+```
+
+## Allocation notes
+
+- For mocked responses, zero-copy behavior is verified with a pointer-equality integration test (`mocked_response_body_is_zero_copy`), asserting the same `Bytes` backing is preserved from queue to response.
+- For production transport, this crate keeps parsing zero-copy by design; allocation checks for the full stack include one parser-owned allocation by the underlying transport and direct parse to `T`.
+
+Mock transport failures with typed variants:
+
+```rust
+let mut behavior_plan = MockBehaviorPlan::default();
+behavior_plan
+    .push(MockBehavior::connect_error("dns failure", None, true))
+    .push(MockBehavior::timeout_error("upstream timeout", Some(504), true))
+    .push(MockBehavior::reject(503, "rate limited"));
+
+let transport = MockRestAdapter::with_behavior_plan(behavior_plan);
+```
+
+Error response helpers:
+
+```rust
+let _ = MockResponse::json_error(
+    429,
+    &sonic_rs::json!({"error":"rate_limited","message":"retry later"}),
+);
+let _ = MockResponse::text(400, "invalid request body");
+```
+
+## Basic usage
+
+```rust
+use shared_restapi::{Client, RestRequest, MockRestAdapter, MockResponse, MockBehaviorPlan, RestTransport};
+
+let transport = MockRestAdapter::new();
+transport.queue_get_response(
+    "https://api.example.com/v1/ping",
+    MockResponse::new(200, b"{\"ok\":true}".as_slice()),
+);
+
+let client = Client::with_transport(transport);
+let response = client.get_url("https://api.example.com/v1/ping").await.unwrap();
+assert_eq!(response.status(), 200);
+```
+
+## Production usage
+
+```rust
+use shared_restapi::{Client, RestRequest};
+use reqwest::Method;
+
+let client = Client::new();
+let response = client
+    .execute(RestRequest::new(Method::GET, "https://api.example.com/v1/data"))
+    .await
+    .unwrap();
+```

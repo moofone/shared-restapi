@@ -5,11 +5,13 @@ use std::{
 };
 
 use bytes::Bytes;
+use reqwest::Method;
 use serde::Serialize;
+use sonic_rs::to_vec;
 
 use super::adapter::{
-    Method, RestBytes, RestError, RestErrorKind, RestFuture, RestRequest, RestResponse, RestResult,
-    RestTransport, SharedRestTransport, RestTransportState,
+    RestBytes, RestError, RestErrorKind, RestFuture, RestRequest, RestResponse, RestResult,
+    RestTransport, RestTransportState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +99,29 @@ pub enum MockBehavior {
         status: u16,
         reason: String,
     },
+    ConnectError {
+        status: Option<u16>,
+        reason: String,
+        retryable: bool,
+    },
+    SendError {
+        status: Option<u16>,
+        reason: String,
+        retryable: bool,
+    },
+    ReceiveError {
+        status: Option<u16>,
+        reason: String,
+        retryable: bool,
+    },
+    TimeoutError {
+        status: Option<u16>,
+        reason: String,
+        retryable: bool,
+    },
+    InternalError {
+        reason: String,
+    },
     Drop,
     Replay(Vec<MockResponse>),
 }
@@ -117,6 +142,44 @@ impl MockBehavior {
         }
     }
 
+    pub fn connect_error(reason: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::ConnectError {
+            status,
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    pub fn send_error(reason: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::SendError {
+            status,
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    pub fn receive_error(reason: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::ReceiveError {
+            status,
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    pub fn timeout_error(reason: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::TimeoutError {
+            status,
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    pub fn internal_error(reason: impl Into<String>) -> Self {
+        Self::InternalError {
+            reason: reason.into(),
+        }
+    }
+
     pub fn drop_response() -> Self {
         Self::Drop
     }
@@ -126,7 +189,7 @@ impl MockBehavior {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum MockOperation {
     Request,
 }
@@ -168,12 +231,13 @@ impl MockBehaviorPlan {
                     MockScenarioStepKind::Delay => {
                         MockBehavior::Delay(step.delay.unwrap_or_else(|| Duration::from_millis(0)))
                     }
-                    MockScenarioStepKind::Reject => {
-                        MockBehavior::Reject {
-                            status: step.status.unwrap_or(500),
-                            reason: step.message.unwrap_or_else(|| "rejected".to_string()),
-                        }
-                    }
+                    MockScenarioStepKind::Reject => MockBehavior::Reject {
+                        status: step.status.unwrap_or(500),
+                        reason: step
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "rejected".to_string()),
+                    },
                     MockScenarioStepKind::Drop => MockBehavior::Drop,
                     MockScenarioStepKind::Replay => MockBehavior::Pass,
                 })
@@ -210,9 +274,25 @@ impl MockResponse {
         self
     }
 
+    pub fn bytes(status: u16, body: impl Into<RestBytes>) -> Self {
+        Self::new(status, body)
+    }
+
+    pub fn text(status: u16, body: impl Into<String>) -> Self {
+        Self::new(status, body.into())
+    }
+
     pub fn json<T: Serialize>(status: u16, payload: &T) -> RestResult<Self> {
-        let body = serde_json::to_vec(payload).map_err(RestError::from_serde)?;
+        let body = to_vec(payload).map_err(RestError::from)?;
         Ok(Self::new(status, body))
+    }
+
+    pub fn json_error<T: Serialize>(status: u16, payload: &T) -> RestResult<Self> {
+        Self::json(status, payload)
+    }
+
+    pub fn text_error(status: u16, message: impl Into<String>) -> Self {
+        Self::text(status, message.into())
     }
 }
 
@@ -255,11 +335,7 @@ impl MockRestAdapterState {
             last_status: self.last_status,
             behavior_remaining: self.behavior_plan.request.len(),
             response_queue_len: self.default_response_queue.len(),
-            route_queue_len: self
-                .route_response_queues
-                .values()
-                .map(VecDeque::len)
-                .sum(),
+            route_queue_len: self.route_response_queues.values().map(VecDeque::len).sum(),
             inbound_count: self.inbound_log.len(),
             outbound_count: self.outbound_log.len(),
             elapsed_total: self.elapsed_total,
@@ -325,7 +401,12 @@ impl MockRestAdapter {
             .push_back(response);
     }
 
-    pub fn queue_response_for(&self, method: Method, url: impl Into<String>, response: MockResponse) {
+    pub fn queue_response_for(
+        &self,
+        method: Method,
+        url: impl Into<String>,
+        response: MockResponse,
+    ) {
         let key = (method, url.into());
         self.state
             .lock()
@@ -342,6 +423,45 @@ impl MockRestAdapter {
 
     pub fn queue_get_response(&self, url: impl Into<String>, response: MockResponse) {
         self.queue_response_for(Method::GET, url, response);
+    }
+
+    pub fn queue_error_response(
+        &self,
+        url: impl Into<String>,
+        status: u16,
+        body: impl Into<RestBytes>,
+    ) {
+        self.queue_error_response_for(Method::GET, url, status, body);
+    }
+
+    pub fn queue_error_response_for(
+        &self,
+        method: Method,
+        url: impl Into<String>,
+        status: u16,
+        body: impl Into<RestBytes>,
+    ) {
+        self.queue_response_for(method, url, MockResponse::new(status, body));
+    }
+
+    pub fn queue_error_text(
+        &self,
+        url: impl Into<String>,
+        status: u16,
+        message: impl Into<String>,
+    ) {
+        self.queue_error_response(url, status, message.into());
+    }
+
+    pub fn queue_error_json<T: Serialize>(
+        &self,
+        url: impl Into<String>,
+        status: u16,
+        payload: &T,
+    ) -> RestResult<()> {
+        let response = MockResponse::json(status, payload)?;
+        self.queue_error_response(url, status, response.body);
+        Ok(())
     }
 
     pub fn outbound_count(&self) -> usize {
@@ -369,25 +489,18 @@ impl MockRestAdapter {
         state.inbound_log.clear();
     }
 
-    fn pop_scenario_step(&self, operation: MockOperation) -> Option<MockScenarioStep> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("mock-restapi mutex poisoned while reading scenario");
-        match operation {
-            MockOperation::Request => state.behavior_plan.scenario.pop_front(),
-        }
-    }
-
     fn pop_behavior(&self, operation: MockOperation) -> MockBehavior {
-        let mut state = self
-            .state
-            .lock()
-            .expect("mock-restapi mutex poisoned while reading behavior plan");
-        let behavior = state.behavior_plan.pop(operation);
-        if let Some(step) = self
-            .pop_scenario_step(operation)
-        {
+        let (behavior, step) = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("mock-restapi mutex poisoned while reading behavior plan");
+            let behavior = state.behavior_plan.pop(operation);
+            let step = state.behavior_plan.scenario.pop_front();
+            (behavior, step)
+        };
+
+        if let Some(step) = step {
             match step.kind {
                 MockScenarioStepKind::Drop => return MockBehavior::Drop,
                 MockScenarioStepKind::Pass => {}
@@ -399,7 +512,10 @@ impl MockRestAdapter {
                 MockScenarioStepKind::Reject => {
                     return MockBehavior::Reject {
                         status: step.status.unwrap_or(500),
-                        reason: step.message.unwrap_or_else(|| "rejected".to_string()),
+                        reason: step
+                            .message
+                            .clone()
+                            .unwrap_or_else(|| "rejected".to_string()),
                     };
                 }
                 MockScenarioStepKind::Replay => {}
@@ -444,16 +560,37 @@ impl MockRestAdapter {
         state.outbound_log.push(request);
     }
 
-    fn error(&self, kind: RestErrorKind, status: Option<u16>, message: impl Into<String>, retryable: bool) {
+    fn error(
+        &self,
+        kind: RestErrorKind,
+        status: Option<u16>,
+        message: impl Into<String>,
+        retryable: bool,
+    ) -> RestError {
+        let message = message.into();
+        let error = match kind {
+            RestErrorKind::Timeout => RestError::timeout(message.clone(), status, retryable),
+            RestErrorKind::Rejected => {
+                RestError::rejected(status.unwrap_or(500), message.clone(), retryable)
+            }
+            RestErrorKind::MockTransport => {
+                RestError::mock_response(message.clone(), status, retryable)
+            }
+            RestErrorKind::Connect => RestError::connect(message.clone(), status, retryable),
+            RestErrorKind::Send => RestError::send(message.clone(), status, retryable),
+            RestErrorKind::Receive => RestError::receive(message.clone(), status, retryable),
+            RestErrorKind::Internal => RestError::internal(message.clone()),
+            RestErrorKind::Parse => RestError::internal(format!("mock parse error: {message}")),
+        };
+
         let mut state = self
             .state
             .lock()
             .expect("mock-restapi mutex poisoned while recording error");
         state.state = RestTransportState::Error;
-        let message = message.into();
-        state.last_error = Some(message.clone());
+        state.last_error = Some(message);
         state.last_status = status;
-        RestError::new(kind, status, message, retryable)
+        error
     }
 }
 
@@ -493,13 +630,39 @@ impl RestTransport for MockRestAdapter {
                     );
                     return Err(error);
                 }
+                MockBehavior::ConnectError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Connect, status, reason, retryable));
+                }
+                MockBehavior::SendError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Send, status, reason, retryable));
+                }
+                MockBehavior::ReceiveError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Receive, status, reason, retryable));
+                }
+                MockBehavior::TimeoutError {
+                    status,
+                    reason,
+                    retryable,
+                } => {
+                    return Err(adapter.error(RestErrorKind::Timeout, status, reason, retryable));
+                }
+                MockBehavior::InternalError { reason } => {
+                    return Err(adapter.error(RestErrorKind::Internal, None, reason, false));
+                }
                 MockBehavior::Reject { status, reason } => {
-                    return Err(adapter.error(
-                        RestErrorKind::Rejected,
-                        Some(status),
-                        reason,
-                        true,
-                    ));
+                    return Err(adapter.error(RestErrorKind::Rejected, Some(status), reason, true));
                 }
                 MockBehavior::Delay(_) | MockBehavior::Pass | MockBehavior::Replay(_) => {}
             }
@@ -509,9 +672,7 @@ impl RestTransport for MockRestAdapter {
                     .state
                     .lock()
                     .expect("mock-restapi mutex poisoned while enqueueing replay responses");
-                state
-                    .default_response_queue
-                    .extend(list.into_iter());
+                state.default_response_queue.extend(list.into_iter());
                 drop(state);
                 adapter.next_default_response(&request)
             } else {
@@ -548,10 +709,9 @@ impl RestTransport for MockRestAdapter {
                     };
                     adapter.push_inbound_log(fallback.clone());
                     {
-                        let mut state = adapter
-                            .state
-                            .lock()
-                            .expect("mock-restapi mutex poisoned while recording fallback response");
+                        let mut state = adapter.state.lock().expect(
+                            "mock-restapi mutex poisoned while recording fallback response",
+                        );
                         state.last_status = Some(200);
                         state.state = RestTransportState::Idle;
                     }

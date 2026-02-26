@@ -1,19 +1,12 @@
-use std::{
-    error::Error,
-    fmt,
-    future::Future,
-    pin::Pin,
-    time::{Duration, Instant},
-};
+use std::{future::Future, pin::Pin, time::Duration, time::Instant};
 
 use bytes::Bytes;
 use reqwest::header::HeaderValue;
 use reqwest::{Client as ReqwestClient, Method};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::from_slice;
-
-pub use reqwest::Method;
+use sonic_rs::from_slice;
+use thiserror::Error;
 
 pub type RestBytes = Bytes;
 pub type RestFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -36,64 +29,196 @@ pub enum RestErrorKind {
     Rejected,
     Parse,
     Internal,
+    MockTransport,
 }
 
-#[derive(Clone, Debug)]
-pub struct RestError {
-    pub kind: RestErrorKind,
-    pub status: Option<u16>,
-    pub message: String,
-    pub retryable: bool,
+#[derive(Error, Debug)]
+pub enum RestError {
+    #[error("connect transport error: {message}")]
+    Connect {
+        #[source]
+        source: reqwest::Error,
+        status: Option<u16>,
+        retryable: bool,
+        message: String,
+    },
+
+    #[error("request send error: {message}")]
+    Send {
+        #[source]
+        source: reqwest::Error,
+        status: Option<u16>,
+        retryable: bool,
+        message: String,
+    },
+
+    #[error("response receive error: {message}")]
+    Receive {
+        #[source]
+        source: reqwest::Error,
+        status: Option<u16>,
+        retryable: bool,
+        message: String,
+    },
+
+    #[error("request timeout: {message}")]
+    Timeout {
+        status: Option<u16>,
+        retryable: bool,
+        message: String,
+    },
+
+    #[error("request rejected (status={status}): {reason}")]
+    Rejected {
+        status: u16,
+        reason: String,
+        retryable: bool,
+    },
+
+    #[error("response parse error: {0}")]
+    Parse(#[from] sonic_rs::Error),
+
+    #[error("internal transport error: {message}")]
+    Internal { message: String },
+
+    #[error("mock transport behavior error: {message}")]
+    MockTransport {
+        kind: RestErrorKind,
+        status: Option<u16>,
+        retryable: bool,
+        message: String,
+    },
 }
 
 impl RestError {
-    pub fn new(
+    fn from_reqwest(kind: RestErrorKind, err: reqwest::Error) -> Self {
+        let status = err.status().map(|status| status.as_u16());
+        let message = err.to_string();
+        let retryable = match kind {
+            RestErrorKind::Connect => err.is_timeout() || err.is_connect(),
+            RestErrorKind::Send => err.is_request() || err.is_connect() || err.is_timeout(),
+            RestErrorKind::Receive => err.is_timeout() || err.is_request(),
+            RestErrorKind::Timeout => true,
+            _ => false,
+        };
+
+        match kind {
+            RestErrorKind::Connect => Self::Connect {
+                source: err,
+                status,
+                retryable,
+                message,
+            },
+            RestErrorKind::Send => Self::Send {
+                source: err,
+                status,
+                retryable,
+                message,
+            },
+            _ => Self::Receive {
+                source: err,
+                status,
+                retryable,
+                message,
+            },
+        }
+    }
+
+    pub fn timeout(message: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::Timeout {
+            status,
+            retryable,
+            message: message.into(),
+        }
+    }
+
+    pub fn rejected(status: u16, reason: impl Into<String>, retryable: bool) -> Self {
+        Self::Rejected {
+            status,
+            reason: reason.into(),
+            retryable,
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal {
+            message: message.into(),
+        }
+    }
+
+    pub fn mock(
         kind: RestErrorKind,
-        status: Option<u16>,
         message: impl Into<String>,
+        status: Option<u16>,
         retryable: bool,
     ) -> Self {
-        Self {
+        Self::MockTransport {
             kind,
             status,
+            retryable,
             message: message.into(),
-            retryable,
         }
     }
 
-    fn from_reqwest(kind: RestErrorKind, err: reqwest::Error) -> Self {
-        let status = err.status().map(|s| s.as_u16());
-        let message = err.to_string();
-        let retryable = err.is_timeout() || err.is_connect() || err.is_request();
-        Self {
-            kind,
-            status,
-            message,
-            retryable,
+    pub fn mock_response(message: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::mock(RestErrorKind::MockTransport, message, status, retryable)
+    }
+
+    pub fn connect(message: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::mock(RestErrorKind::Connect, message, status, retryable)
+    }
+
+    pub fn send(message: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::mock(RestErrorKind::Send, message, status, retryable)
+    }
+
+    pub fn receive(message: impl Into<String>, status: Option<u16>, retryable: bool) -> Self {
+        Self::mock(RestErrorKind::Receive, message, status, retryable)
+    }
+
+    pub fn parse(err: sonic_rs::Error) -> Self {
+        Self::Parse(err)
+    }
+
+    pub fn kind(&self) -> RestErrorKind {
+        match self {
+            Self::Connect { .. } => RestErrorKind::Connect,
+            Self::Send { .. } => RestErrorKind::Send,
+            Self::Receive { .. } => RestErrorKind::Receive,
+            Self::Timeout { .. } => RestErrorKind::Timeout,
+            Self::Rejected { .. } => RestErrorKind::Rejected,
+            Self::Parse(_) => RestErrorKind::Parse,
+            Self::Internal { .. } => RestErrorKind::Internal,
+            Self::MockTransport { kind, .. } => *kind,
         }
     }
 
-    pub fn from_serde(err: serde_json::Error) -> Self {
-        Self {
-            kind: RestErrorKind::Parse,
-            status: None,
-            message: err.to_string(),
-            retryable: false,
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Connect { status, .. } => *status,
+            Self::Send { status, .. } => *status,
+            Self::Receive { status, .. } => *status,
+            Self::Timeout { status, .. } => *status,
+            Self::Rejected { status, .. } => Some(*status),
+            Self::Parse(_) => None,
+            Self::Internal { .. } => None,
+            Self::MockTransport { status, .. } => *status,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Connect { retryable, .. } => *retryable,
+            Self::Send { retryable, .. } => *retryable,
+            Self::Receive { retryable, .. } => *retryable,
+            Self::Timeout { retryable, .. } => *retryable,
+            Self::Rejected { retryable, .. } => *retryable,
+            Self::Parse(_) => false,
+            Self::Internal { .. } => false,
+            Self::MockTransport { retryable, .. } => *retryable,
         }
     }
 }
-
-impl fmt::Display for RestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "rest error {:?} status={:?} retryable={} {}",
-            self.kind, self.status, self.retryable, self.message
-        )
-    }
-}
-
-impl Error for RestError {}
 
 #[derive(Clone, Debug)]
 pub struct RestRequest {
@@ -161,7 +286,24 @@ impl RestResponse {
     }
 
     pub fn json<T: DeserializeOwned>(&self) -> RestResult<T> {
-        from_slice(&self.body).map_err(RestError::from_serde)
+        from_slice(&self.body).map_err(RestError::from)
+    }
+
+    pub fn ensure_success(&self) -> RestResult<()> {
+        if self.is_success() {
+            Ok(())
+        } else {
+            let retryable = (500..600).contains(&self.status);
+            let body_excerpt = String::from_utf8_lossy(&self.body);
+            Err(RestError::rejected(
+                self.status,
+                format!(
+                    "request rejected: status={} body={}",
+                    self.status, body_excerpt
+                ),
+                retryable,
+            ))
+        }
     }
 }
 
@@ -194,11 +336,24 @@ impl Client {
         self.transport.execute(request).await
     }
 
+    pub async fn execute_checked(&self, request: RestRequest) -> RestResult<RestResponse> {
+        let response = self.execute(request).await?;
+        response.ensure_success()?;
+        Ok(response)
+    }
+
     pub async fn execute_json<T>(&self, request: RestRequest) -> RestResult<T>
     where
         T: DeserializeOwned,
     {
         self.execute(request).await?.json::<T>()
+    }
+
+    pub async fn execute_json_checked<T>(&self, request: RestRequest) -> RestResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        self.execute_checked(request).await?.json::<T>()
     }
 
     pub async fn get(&self, request: RestRequest) -> RestResult<RestResponse> {
@@ -222,7 +377,7 @@ impl Client {
         url: impl Into<String>,
         payload: &T,
     ) -> RestResult<RestResponse> {
-        let body = serde_json::to_vec(payload).map_err(RestError::from_serde)?;
+        let body = sonic_rs::to_vec(payload).map_err(RestError::from)?;
         self.post(url, body).await
     }
 }
@@ -259,7 +414,7 @@ impl RestTransport for ReqwestTransport {
 
             for (key, value) in request.headers {
                 let value = HeaderValue::from_bytes(value.as_ref())
-                    .map_err(|err| RestError::new(RestErrorKind::Internal, None, err, false))?;
+                    .map_err(|err| RestError::internal(err.to_string()))?;
                 req = req.header(key, value);
             }
 
