@@ -198,11 +198,33 @@ assert_eq!(fail.is_retryable(), false);
 
 ```rust
 use shared_restapi::{Client, RestRequest};
-use reqwest::Method;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct Candle {
+    close: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct PriceResponse {
+    result: Vec<Candle>,
+}
 
 let client = Client::new();
-let response = client
-    .execute(RestRequest::new(Method::GET, "https://api.example.com/v1/data"))
+let payload = serde_json::json!({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "public/get_order_book",
+    "params": {
+        "instrument_name": "BTC-PERPETUAL",
+    },
+});
+
+let response: PriceResponse = client
+    .post_json_checked(
+        "https://www.deribit.com/api/v2/public/get_order_book",
+        &payload,
+    )
     .await
-    .unwrap();
+    .expect("production request should parse into typed payload");
 ```
