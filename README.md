@@ -8,20 +8,6 @@ Rate limiting is intentionally layered separately and should be composed with
 `shared-restapi` defaults typed JSON calls to the direct parsing path. The raw
 `execute(RestRequest::new(...))` style entrypoint is not part of the public API; use typed helpers (`execute_json*`) for JSON responses and `*_response` methods for explicit raw transport metadata.
 
-Production requests use a default timeout of `2s`. You can override per request with `RestRequest::with_timeout(...)`.
-
-Retries are opt-in and request-scoped. No retries occur unless you set retry policy on the request (`with_retry_on_status`, `with_retry_on_statuses`, `with_retry_on_4xx`, `with_retry_on_5xx`, or `with_retry_on_any_non_2xx`).
-
-Request bodies are bytes-only (`RestBytes` / `bytes::Bytes`) to prevent implicit request-side serialization allocations in this crate.
-
-Timeout and retry behavior is validated with feature-gated Axum e2e tests (`tests/e2e/e2e_jsonrpc.rs`). Run them explicitly with:
-`cargo test --features e2e-tests --test e2e_jsonrpc`.
-
-- a concrete `ReqwestTransport` for production
-- a `RestTransport` trait for transport abstraction
-- a simple `Client` facade for request execution
-- a deterministic in-memory `MockRestAdapter` for fully controlled tests
-
 ### Parse path
 
 `RestResponse::json::<T>(&self)` parses directly from the response bytes with `sonic-rs`:
