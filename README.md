@@ -1,6 +1,4 @@
 [![CI](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/moofone/shared-restapi/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/shared-restapi.svg)](https://crates.io/crates/shared-restapi)
-[![docs.rs](https://docs.rs/shared-restapi/badge.svg)](https://docs.rs/shared-restapi)
 
 Wrapper crate around `reqwest` for shared REST access with deterministic mock control in tests. Designed to minimize allocations while keeping a simple, production-friendly adapter surface.
 Rate limiting is intentionally layered separately and should be composed with
