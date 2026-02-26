@@ -44,6 +44,8 @@ You do not need to keep a shared scratch buffer at the request level for JSON pa
 
 These methods parse directly from transport bytes and bypass response-header materialization on the fast path where possible.
 
+`execute`, `get`, and `post` are preserved only for callers that need full `RestResponse` metadata; they are not part of the recommended typed JSON path.
+
 ## Mocking
 
 The mock adapter supports deterministic behavior control for tests:
