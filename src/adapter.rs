@@ -7,6 +7,8 @@ use serde::de::DeserializeOwned;
 use sonic_rs::from_slice;
 use thiserror::Error;
 
+use crate::fixture_policy;
+
 pub type RestBytes = Bytes;
 pub type RestFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub type RestResult<T> = Result<T, RestError>;
@@ -247,6 +249,7 @@ pub struct RestRequest {
     pub body: Option<RestBytes>,
     pub timeout: Option<Duration>,
     pub retry_policy: Option<RestRetryPolicy>,
+    pub fixture_contract: Option<String>,
 }
 
 impl RestRequest {
@@ -258,6 +261,7 @@ impl RestRequest {
             body: None,
             timeout: Some(DEFAULT_REQUEST_TIMEOUT),
             retry_policy: None,
+            fixture_contract: None,
         }
     }
 
@@ -334,6 +338,11 @@ impl RestRequest {
 
     pub fn with_retry_on_any_non_2xx(self, max_retries: usize) -> Self {
         self.with_retry_on_statuses((100u16..200u16).chain(300u16..600u16), max_retries)
+    }
+
+    pub fn with_fixture_contract(mut self, contract_id: impl Into<String>) -> Self {
+        self.fixture_contract = Some(contract_id.into());
+        self
     }
 
     fn should_retry_status(&self, status: u16, attempt: usize) -> bool {
@@ -531,6 +540,7 @@ impl RestTransport for ReqwestTransport {
     fn execute_raw(&self, request: RestRequest) -> RestFuture<RestResult<RestRawResponse>> {
         let client = self.client.clone();
         Box::pin(async move {
+            fixture_policy::ensure_live_request_allowed(&request)?;
             let start = Instant::now();
             let mut req = client.request(request.method.clone(), &request.url);
 
@@ -567,6 +577,7 @@ impl RestTransport for ReqwestTransport {
     fn execute(&self, request: RestRequest) -> RestFuture<RestResult<RestResponse>> {
         let client = self.client.clone();
         Box::pin(async move {
+            fixture_policy::ensure_live_request_allowed(&request)?;
             let start = Instant::now();
             let mut req = client.request(request.method.clone(), &request.url);
 
