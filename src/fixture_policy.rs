@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use sonic_rs::JsonValueTrait;
+
 use crate::{RestError, RestRequest, RestResult};
 
 const SHARED_RESTAPI_FIXTURE_CAPTURE_MODE_ENV: &str = "SHARED_RESTAPI_FIXTURE_CAPTURE_MODE";
@@ -52,6 +54,45 @@ pub fn fixture_capture_mode_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn ensure_live_capture_fixture(path: &PathBuf) -> RestResult<()> {
+    let bytes = std::fs::read(path).map_err(|err| {
+        RestError::internal(format!(
+            "live REST request blocked: failed to read fixture {}: {err}",
+            path.display()
+        ))
+    })?;
+    let root = sonic_rs::from_slice::<sonic_rs::Value>(&bytes).map_err(|err| {
+        RestError::internal(format!(
+            "live REST request blocked: failed to parse fixture {}: {err}",
+            path.display()
+        ))
+    })?;
+    let source = root.get("source").and_then(|value| value.as_str()).unwrap_or("");
+    let captured_at_ms = root
+        .get("captured_at_ms")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let capture_command = root
+        .get("capture_command")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let exchange_env = root
+        .get("exchange_env")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if source != "live_capture"
+        || captured_at_ms == 0
+        || capture_command.trim().is_empty()
+        || exchange_env.trim().is_empty()
+    {
+        return Err(RestError::internal(format!(
+            "live REST request blocked: fixture {} is not compliant live-capture provenance",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
     if fixture_capture_mode_enabled() {
         return Ok(());
@@ -82,6 +123,8 @@ pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
             requirement.error_path.display()
         )));
     }
+    ensure_live_capture_fixture(&requirement.success_path)?;
+    ensure_live_capture_fixture(&requirement.error_path)?;
     Ok(())
 }
 
@@ -89,6 +132,29 @@ pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
 mod tests {
     use super::*;
     use reqwest::Method;
+    use std::path::Path;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "shared-restapi-fixture-policy-{}-{}",
+            std::process::id(),
+            name
+        ))
+    }
+
+    fn write_fixture(path: &Path, source: &str) {
+        let body = sonic_rs::to_vec(&sonic_rs::json!({
+            "source": source,
+            "captured_at_ms": if source == "live_capture" { 1_u64 } else { 0_u64 },
+            "capture_command": if source == "live_capture" { "capture" } else { "" },
+            "exchange_env": if source == "live_capture" { "deribit_testnet" } else { "" },
+            "url": "https://example.invalid",
+            "status": 200,
+            "body": "{}"
+        }))
+        .expect("serialize fixture");
+        std::fs::write(path, body).expect("write fixture");
+    }
 
     #[test]
     fn live_request_requires_registered_contract_and_files() {
@@ -106,5 +172,49 @@ mod tests {
         let err =
             ensure_live_request_allowed(&request).expect_err("missing fixture metadata should fail");
         assert!(err.to_string().contains("missing required fixture contract metadata"));
+    }
+
+    #[test]
+    fn live_request_rejects_non_live_capture_fixtures() {
+        clear_required_rest_contracts_for_tests();
+        let success = temp_path("success.json");
+        let error = temp_path("error.json");
+        let _ = std::fs::remove_file(&success);
+        let _ = std::fs::remove_file(&error);
+        write_fixture(success.as_path(), "synthesized");
+        write_fixture(error.as_path(), "live_capture");
+        register_required_rest_contracts([RestFixtureRequirement {
+            contract_id: "contract-a".to_string(),
+            success_path: success.clone(),
+            error_path: error.clone(),
+        }]);
+        let request = RestRequest::new(Method::GET, "https://example.invalid")
+            .with_fixture_contract("contract-a");
+        let err =
+            ensure_live_request_allowed(&request).expect_err("non-live provenance should fail");
+        assert!(err.to_string().contains("not compliant live-capture provenance"));
+        let _ = std::fs::remove_file(success);
+        let _ = std::fs::remove_file(error);
+    }
+
+    #[test]
+    fn live_request_accepts_live_capture_fixtures() {
+        clear_required_rest_contracts_for_tests();
+        let success = temp_path("good-success.json");
+        let error = temp_path("good-error.json");
+        let _ = std::fs::remove_file(&success);
+        let _ = std::fs::remove_file(&error);
+        write_fixture(success.as_path(), "live_capture");
+        write_fixture(error.as_path(), "live_capture");
+        register_required_rest_contracts([RestFixtureRequirement {
+            contract_id: "contract-a".to_string(),
+            success_path: success.clone(),
+            error_path: error.clone(),
+        }]);
+        let request = RestRequest::new(Method::GET, "https://example.invalid")
+            .with_fixture_contract("contract-a");
+        ensure_live_request_allowed(&request).expect("live-captured fixtures should pass");
+        let _ = std::fs::remove_file(success);
+        let _ = std::fs::remove_file(error);
     }
 }

@@ -37,8 +37,15 @@ Recommended pattern:
   - a success fixture
   - an error fixture
   - a replay test that drives `MockRestAdapter`
+- compliant fixtures must carry live provenance metadata:
+  - `source = "live_capture"`
+  - `captured_at_ms`
+  - `capture_command`
+  - `exchange_env`
+- synthesized or malformed fixtures belong in a separate robustness bucket and do not satisfy
+  live contract compliance
 - live REST execution should be blocked unless the contract is registered and its fixtures exist,
-  except for explicit fixture-capture mode
+  and those fixtures are compliant live captures, except for explicit fixture-capture mode
 
 This removes the need to remember fixture work manually: contract registration, fixture existence,
 and replay coverage should be enforced by tests.
