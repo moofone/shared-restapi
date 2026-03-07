@@ -24,6 +24,25 @@ The mock adapter supports deterministic behavior control for tests:
 
 Use it when you need tests that assert exact transport behavior without outbound network calls.
 
+## Boundary Fixture Rule
+
+When `shared-restapi` is used behind an exchange or external-contract boundary, the owning
+boundary actor should keep raw contract fixtures under its own `test/fixtures/` tree.
+
+Recommended pattern:
+
+- raw REST success/error fixtures live on the boundary actor only
+- downstream business actors do not duplicate raw exchange payloads
+- every registered live REST contract has:
+  - a success fixture
+  - an error fixture
+  - a replay test that drives `MockRestAdapter`
+- live REST execution should be blocked unless the contract is registered and its fixtures exist,
+  except for explicit fixture-capture mode
+
+This removes the need to remember fixture work manually: contract registration, fixture existence,
+and replay coverage should be enforced by tests.
+
 ## Allocation notes
 
 - For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
