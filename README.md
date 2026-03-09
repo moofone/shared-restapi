@@ -44,6 +44,12 @@ Recommended pattern:
   - `exchange_env`
 - synthesized or malformed fixtures belong in a separate robustness bucket and do not satisfy
   live contract compliance
+- `with_fixture_contract(...)` / `with_required_fixture_contract(...)` declare which contract a
+  live request must satisfy; they do not replay fixture payloads
+- normal mode still performs the real HTTP request, but only after fixture existence/provenance
+  validation passes
+- explicit fixture-capture mode bypasses the gate so capture workflows can refresh fixtures, and
+  still performs the real HTTP request
 - live REST execution should be blocked unless the contract is registered and its fixtures exist,
   and those fixtures are compliant live captures, except for explicit fixture-capture mode
 

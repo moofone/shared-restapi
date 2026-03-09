@@ -15,6 +15,7 @@ pub use adapter::{
 };
 pub use fixture_policy::{
     RestFixtureRequirement, clear_required_rest_contracts_for_tests, ensure_live_request_allowed,
+    validate_required_rest_contracts,
     fixture_capture_mode_enabled as rest_fixture_capture_mode_enabled,
     register_required_rest_contracts, required_rest_contracts,
 };

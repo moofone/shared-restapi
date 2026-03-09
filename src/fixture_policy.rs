@@ -128,6 +128,31 @@ pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
     Ok(())
 }
 
+pub fn validate_required_rest_contracts(
+    requirements: &[RestFixtureRequirement],
+) -> RestResult<()> {
+    if requirements.is_empty() {
+        return Err(RestError::internal(
+            "required REST fixture validation failed: no fixture contracts registered",
+        ));
+    }
+
+    for requirement in requirements {
+        if !requirement.success_path.exists() || !requirement.error_path.exists() {
+            return Err(RestError::internal(format!(
+                "required REST fixture validation failed: missing fixture files for contract={} success={} error={}",
+                requirement.contract_id,
+                requirement.success_path.display(),
+                requirement.error_path.display()
+            )));
+        }
+        ensure_live_capture_fixture(&requirement.success_path)?;
+        ensure_live_capture_fixture(&requirement.error_path)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +239,49 @@ mod tests {
         let request = RestRequest::new(Method::GET, "https://example.invalid")
             .with_fixture_contract("contract-a");
         ensure_live_request_allowed(&request).expect("live-captured fixtures should pass");
+        let _ = std::fs::remove_file(success);
+        let _ = std::fs::remove_file(error);
+    }
+
+    #[test]
+    fn validator_requires_registered_contracts() {
+        let err = validate_required_rest_contracts(&[])
+            .expect_err("empty requirement list should fail validation");
+        assert!(err.to_string().contains("no fixture contracts registered"));
+    }
+
+    #[test]
+    fn validator_rejects_missing_fixture_files() {
+        let success = temp_path("validator-missing-success.json");
+        let error = temp_path("validator-missing-error.json");
+        let _ = std::fs::remove_file(&success);
+        let _ = std::fs::remove_file(&error);
+
+        let err = validate_required_rest_contracts(&[RestFixtureRequirement {
+            contract_id: "contract-a".to_string(),
+            success_path: success.clone(),
+            error_path: error.clone(),
+        }])
+        .expect_err("missing files should fail validation");
+        assert!(err.to_string().contains("missing fixture files"));
+    }
+
+    #[test]
+    fn validator_accepts_live_capture_fixtures() {
+        let success = temp_path("validator-good-success.json");
+        let error = temp_path("validator-good-error.json");
+        let _ = std::fs::remove_file(&success);
+        let _ = std::fs::remove_file(&error);
+        write_fixture(success.as_path(), "live_capture");
+        write_fixture(error.as_path(), "live_capture");
+
+        validate_required_rest_contracts(&[RestFixtureRequirement {
+            contract_id: "contract-a".to_string(),
+            success_path: success.clone(),
+            error_path: error.clone(),
+        }])
+        .expect("live-captured fixtures should pass validation");
+
         let _ = std::fs::remove_file(success);
         let _ = std::fs::remove_file(error);
     }
