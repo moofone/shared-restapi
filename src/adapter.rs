@@ -345,6 +345,10 @@ impl RestRequest {
         self
     }
 
+    pub fn with_required_fixture_contract(self, contract_id: impl Into<String>) -> Self {
+        self.with_fixture_contract(contract_id)
+    }
+
     fn should_retry_status(&self, status: u16, attempt: usize) -> bool {
         self.retry_policy
             .as_ref()
