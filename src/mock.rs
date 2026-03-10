@@ -6,8 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use reqwest::Method;
-use serde::Serialize;
-use sonic_rs::to_vec;
+use sonic_rs::{Serialize, to_vec};
 
 use super::adapter::{
     RestBytes, RestError, RestErrorKind, RestFuture, RestRawResponse, RestRequest, RestResponse,
@@ -692,12 +691,9 @@ impl RestTransport for MockRestAdapter {
                         elapsed,
                     });
                     {
-                        let mut state = adapter
-                            .state
-                            .lock()
-                            .expect(
-                                "mock-restapi mutex poisoned while recording inbound raw response",
-                            );
+                        let mut state = adapter.state.lock().expect(
+                            "mock-restapi mutex poisoned while recording inbound raw response",
+                        );
                         state.last_status = Some(status);
                         state.state = RestTransportState::Idle;
                         state.elapsed_total += elapsed;

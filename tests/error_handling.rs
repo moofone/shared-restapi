@@ -2,13 +2,14 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use sonic_rs::Value;
+use serde::Deserialize;
+use shared_restapi::adapter::RestTransport;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
     RestErrorKind, RestRequest, RestResponse, RestResult,
 };
-use shared_restapi::adapter::RestTransport;
-use serde::Deserialize;
+use sonic_rs::Value;
+use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 #[global_allocator]
 static GLOBAL: SharedRestapiTestAlloc = SharedRestapiTestAlloc;
@@ -52,7 +53,10 @@ fn assert_error_kind(err: RestError, expected: RestErrorKind, expected_retryable
 #[test]
 fn request_timeout_defaults_to_two_seconds_and_is_overridable() {
     let default_request = RestRequest::get("https://api.example.com/default-timeout");
-    assert_eq!(default_request.timeout, Some(std::time::Duration::from_secs(2)));
+    assert_eq!(
+        default_request.timeout,
+        Some(std::time::Duration::from_secs(2))
+    );
 
     let overridden = default_request.with_timeout(std::time::Duration::from_millis(250));
     assert_eq!(
@@ -131,11 +135,6 @@ fn retry_helper_any_non_2xx_excludes_2xx() {
 
 #[tokio::test]
 async fn execute_json_checked_retries_configured_status_then_succeeds() {
-    #[derive(Debug, Deserialize)]
-    struct RetryOk {
-        ok: bool,
-    }
-
     let url = "https://api.example.com/retry-503-then-ok";
     let adapter = MockRestAdapter::new();
     adapter.queue_get_response(url, MockResponse::text(503, "temporarily unavailable"));
@@ -144,10 +143,10 @@ async fn execute_json_checked_retries_configured_status_then_succeeds() {
 
     let transport = Client::with_transport(adapter.clone());
     let response = transport
-        .execute_json_checked::<RetryOk>(RestRequest::get(url).with_retry_on_status(503, 2))
+        .execute_json_checked::<Value>(RestRequest::get(url).with_retry_on_status(503, 2))
         .await
         .expect("request should succeed after retries on configured status");
-    assert!(response.ok);
+    assert_eq!(response["ok"].as_bool(), Some(true));
 
     let snapshot = adapter.snapshot();
     assert_eq!(snapshot.request_count, 3);
@@ -415,14 +414,38 @@ async fn mocked_response_body_is_zero_copy() {
     assert_eq!(response.body().as_ptr(), original_ptr);
 }
 
+#[derive(Debug, Deserialize)]
+struct BorrowedQuote<'a> {
+    #[serde(borrow)]
+    symbol: &'a str,
+    price: f64,
+}
+
+#[tokio::test]
+async fn response_json_supports_borrowed_zero_copy_structs() {
+    let original = Bytes::from_static(br#"{"symbol":"BTC-PERPETUAL","price":69000.5}"#);
+    let original_ptr = original.as_ptr();
+
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(
+        "https://api.example.com/borrowed",
+        MockResponse::new(200, original),
+    );
+    let client = Client::with_transport(adapter);
+
+    let response = client
+        .get_checked_response(RestRequest::get("https://api.example.com/borrowed"))
+        .await
+        .expect("checked response should succeed");
+    let parsed: BorrowedQuote<'_> = response.json().expect("borrowed parse should succeed");
+
+    assert_eq!(parsed.symbol, "BTC-PERPETUAL");
+    assert_eq!(parsed.price, 69_000.5);
+    assert_eq!(parsed.symbol.as_ptr(), original_ptr.wrapping_add(11));
+}
+
 #[tokio::test]
 async fn allocation_profile_is_measurable_for_execute_json_checked() {
-    #[derive(Debug, Deserialize)]
-    struct AllocPayload {
-        ok: bool,
-        n: Vec<u32>,
-    }
-
     let transport = HeaderHeavyTransport::new(Bytes::from_static(
         b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}",
     ));
@@ -430,24 +453,31 @@ async fn allocation_profile_is_measurable_for_execute_json_checked() {
 
     reset_alloc_counter();
     let parsed = client
-        .execute_json::<AllocPayload>(RestRequest::post("https://api.example.com/alloc").with_body(
-            Bytes::from_static(b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}"),
-        ))
+        .execute_json::<Value>(
+            RestRequest::post("https://api.example.com/alloc").with_body(Bytes::from_static(
+                b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}",
+            )),
+        )
         .await
         .expect("baseline parse should succeed");
-    assert!(parsed.ok);
-    assert_eq!(parsed.n.len(), 10);
+    assert_eq!(parsed["ok"].as_bool(), Some(true));
+    assert_eq!(parsed["n"].as_array().map(|items| items.len()), Some(10));
     let execute_allocation_count = take_allocs();
 
     reset_alloc_counter();
     let parsed_direct = client
-        .execute_json_direct::<AllocPayload>(RestRequest::post("https://api.example.com/alloc").with_body(
-            Bytes::from_static(b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}"),
-        ))
+        .execute_json_direct::<Value>(
+            RestRequest::post("https://api.example.com/alloc").with_body(Bytes::from_static(
+                b"{\"ok\":true,\"n\":[1,2,3,4,5,6,7,8,9,10]}",
+            )),
+        )
         .await
         .expect("direct parse should succeed");
-    assert!(parsed_direct.ok);
-    assert_eq!(parsed_direct.n.len(), 10);
+    assert_eq!(parsed_direct["ok"].as_bool(), Some(true));
+    assert_eq!(
+        parsed_direct["n"].as_array().map(|items| items.len()),
+        Some(10)
+    );
     let direct_allocation_count = take_allocs();
 
     eprintln!(
@@ -476,7 +506,8 @@ async fn allocation_profile_is_measurable_for_execute_json_checked() {
     assert!(direct_slice_allocation_count > 0);
 
     reset_alloc_counter();
-    let parsed_by_slice: Vec<u32> = sonic_rs::from_slice(payload).expect("parse from byte slice should work");
+    let parsed_by_slice: Vec<u32> =
+        sonic_rs::from_slice(payload).expect("parse from byte slice should work");
     assert_eq!(parsed_by_slice, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     let from_slice_allocation_count = take_allocs();
 
@@ -501,7 +532,10 @@ impl HeaderHeavyTransport {
 }
 
 impl RestTransport for HeaderHeavyTransport {
-    fn execute(&self, request: RestRequest) -> shared_restapi::adapter::RestFuture<RestResult<RestResponse>> {
+    fn execute(
+        &self,
+        request: RestRequest,
+    ) -> shared_restapi::adapter::RestFuture<RestResult<RestResponse>> {
         let body = self.body.clone();
         let headers = (0..64)
             .map(|index| (format!("x-{index}"), Bytes::from_static(b"v")))
@@ -517,7 +551,10 @@ impl RestTransport for HeaderHeavyTransport {
         })
     }
 
-    fn execute_raw(&self, _request: RestRequest) -> shared_restapi::adapter::RestFuture<RestResult<(u16, Bytes, std::time::Duration)>> {
+    fn execute_raw(
+        &self,
+        _request: RestRequest,
+    ) -> shared_restapi::adapter::RestFuture<RestResult<(u16, Bytes, std::time::Duration)>> {
         let body = self.body.clone();
         Box::pin(async move { Ok((200, body, std::time::Duration::from_millis(0))) })
     }
