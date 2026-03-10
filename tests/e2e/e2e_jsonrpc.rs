@@ -2,26 +2,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
-use axum::Router;
 use bytes::Bytes;
 use shared_restapi::{Client, RestErrorKind, RestRequest};
+use sonic_rs::{JsonValueTrait, Value};
 use tokio::net::TcpListener;
 use tokio::time::sleep;
-
-#[derive(Debug, serde::Deserialize)]
-struct RpcResponse<T> {
-    jsonrpc: String,
-    id: u64,
-    result: T,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct OkResult {
-    ok: bool,
-}
 
 #[derive(Clone, Default)]
 struct AppState {
@@ -34,14 +23,14 @@ async fn e2e_jsonrpc_success_roundtrip() {
     let client = Client::new();
     let payload = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"ok","params":{}}"#);
 
-    let response: RpcResponse<OkResult> = client
+    let response: Value = client
         .execute_json_checked(RestRequest::post(server.url("/jsonrpc/ok")).with_body(payload))
         .await
         .expect("jsonrpc response should parse");
 
-    assert_eq!(response.jsonrpc, "2.0");
-    assert_eq!(response.id, 1);
-    assert!(response.result.ok);
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["id"].as_u64(), Some(1));
+    assert_eq!(response["result"]["ok"].as_bool(), Some(true));
 }
 
 #[tokio::test]
@@ -50,7 +39,7 @@ async fn e2e_retry_on_status_then_success() {
     let client = Client::new();
     let payload = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"retry","params":{}}"#);
 
-    let response: RpcResponse<OkResult> = client
+    let response: Value = client
         .execute_json_checked(
             RestRequest::post(server.url("/jsonrpc/retry-once"))
                 .with_body(payload)
@@ -59,8 +48,8 @@ async fn e2e_retry_on_status_then_success() {
         .await
         .expect("first 503 should retry and then succeed");
 
-    assert_eq!(response.id, 1);
-    assert!(response.result.ok);
+    assert_eq!(response["id"].as_u64(), Some(1));
+    assert_eq!(response["result"]["ok"].as_bool(), Some(true));
 }
 
 #[tokio::test]
@@ -70,7 +59,7 @@ async fn e2e_default_timeout_is_two_seconds() {
     let payload = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"slow","params":{}}"#);
 
     let err = client
-        .execute_json_checked::<RpcResponse<OkResult>>(
+        .execute_json_checked::<Value>(
             RestRequest::post(server.url("/jsonrpc/timeout")).with_body(payload),
         )
         .await
@@ -86,7 +75,7 @@ async fn e2e_explicit_timeout_override_triggers_earlier() {
     let payload = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"slow","params":{}}"#);
 
     let err = client
-        .execute_json_checked::<RpcResponse<OkResult>>(
+        .execute_json_checked::<Value>(
             RestRequest::post(server.url("/jsonrpc/timeout"))
                 .with_body(payload)
                 .with_timeout(Duration::from_millis(200)),

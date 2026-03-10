@@ -77,13 +77,7 @@ use shared_restapi::{
     MockRestAdapter,
     RestRequest,
 };
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize, PartialEq)]
-struct PingResponse {
-    ok: bool,
-    request_id: String,
-}
+use sonic_rs::Value;
 
 let transport = MockRestAdapter::new();
 transport.queue_get_response(
@@ -92,18 +86,13 @@ transport.queue_get_response(
 );
 let client = Client::with_transport(transport);
 
-let ok: PingResponse = client
-    .execute_json_checked::<PingResponse>(RestRequest::get("https://api.example.com/v1/ping"))
+let ok: Value = client
+    .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/v1/ping"))
     .await
     .expect("mocked success path");
 
-assert_eq!(
-    ok,
-    PingResponse {
-        ok: true,
-        request_id: "ping-42".to_string()
-    }
-);
+assert_eq!(ok["ok"].as_bool(), Some(true));
+assert_eq!(ok["request_id"].as_str(), Some("ping-42"));
 
 ```
 
@@ -117,19 +106,13 @@ use shared_restapi::{
     RestRequest,
     MockResponse,
 };
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct PingResponse {
-    ok: bool,
-    request_id: String,
-}
+use sonic_rs::Value;
 
 let transport = MockRestAdapter::new();
 transport.queue_get_response("https://api.example.com/v1/ping", MockResponse::text(503, "rate limited"));
 let client = Client::with_transport(transport);
 let fail = client
-    .execute_json_checked::<PingResponse>(RestRequest::get("https://api.example.com/v1/ping"))
+    .execute_json_checked::<Value>(RestRequest::get("https://api.example.com/v1/ping"))
     .await
     .expect_err("mocked rejection should be surfaced");
 assert_eq!(fail.kind(), RestErrorKind::Rejected);
@@ -140,42 +123,28 @@ assert_eq!(fail.is_retryable(), true);
 
 ```rust
 use shared_restapi::{Client, RestRequest};
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct Candle {
-    close: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct PriceResponse {
-    result: Vec<Candle>,
-}
+use sonic_rs::Value;
 
 let client = Client::new();
 let payload = bytes::Bytes::from_static(
     br#"{"jsonrpc":"2.0","id":1,"method":"public/get_order_book","params":{"instrument_name":"BTC-PERPETUAL"}}"#,
 );
 
-let candles: PriceResponse = client
+let candles: Value = client
     .execute_json_checked(
         RestRequest::post("https://www.deribit.com/api/v2/public/get_order_book")
             .with_body(payload),
     )
     .await
     .expect("production request should parse into typed payload");
+assert!(candles.get("result").is_some());
 ```
 
 ## Example - Production With Retry
 
 ```rust
 use shared_restapi::{Client, RestRequest};
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct PriceResponse {
-    result: sonic_rs::Value,
-}
+use sonic_rs::Value;
 
 let client = Client::new();
 let payload = bytes::Bytes::from_static(
@@ -187,8 +156,9 @@ let request = RestRequest::post("https://www.deribit.com/api/v2/public/get_order
     .with_retry_on_4xx(2)
     .with_retry_on_statuses_extend([503], 2); // retry all 4xx plus 503
 
-let candles: PriceResponse = client
+let candles: Value = client
     .execute_json_checked(request)
     .await
     .expect("request should retry up to 2 times on all 4xx statuses and 503");
+assert!(candles.get("result").is_some());
 ```
