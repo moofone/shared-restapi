@@ -378,7 +378,17 @@ impl RestResponse {
         &self.body
     }
 
-    pub fn json<T>(&self) -> RestResult<T>
+    /// Parse directly from the response body. Borrowed output types remain valid only
+    /// while this `RestResponse` is alive.
+    pub fn json<'de, T>(&'de self) -> RestResult<T>
+    where
+        T: Deserialize<'de>,
+    {
+        from_slice(&self.body).map_err(RestError::from)
+    }
+
+    /// Parse into an owned type that does not borrow from the response body.
+    pub fn json_owned<T>(&self) -> RestResult<T>
     where
         T: for<'de> Deserialize<'de>,
     {
@@ -504,6 +514,10 @@ impl Client {
 
     pub async fn get_response(&self, request: RestRequest) -> RestResult<RestResponse> {
         self.execute(request).await
+    }
+
+    pub async fn get_checked_response(&self, request: RestRequest) -> RestResult<RestResponse> {
+        self.execute_checked(request).await
     }
 
     pub async fn get_url_response(&self, url: impl Into<String>) -> RestResult<RestResponse> {

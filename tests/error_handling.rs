@@ -2,6 +2,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
+use serde::Deserialize;
 use shared_restapi::adapter::RestTransport;
 use shared_restapi::{
     Client, MockBehavior, MockBehaviorPlan, MockResponse, MockRestAdapter, RestError,
@@ -411,6 +412,36 @@ async fn mocked_response_body_is_zero_copy() {
         .expect("mock response should be returned");
 
     assert_eq!(response.body().as_ptr(), original_ptr);
+}
+
+#[derive(Debug, Deserialize)]
+struct BorrowedQuote<'a> {
+    #[serde(borrow)]
+    symbol: &'a str,
+    price: f64,
+}
+
+#[tokio::test]
+async fn response_json_supports_borrowed_zero_copy_structs() {
+    let original = Bytes::from_static(br#"{"symbol":"BTC-PERPETUAL","price":69000.5}"#);
+    let original_ptr = original.as_ptr();
+
+    let adapter = MockRestAdapter::new();
+    adapter.queue_get_response(
+        "https://api.example.com/borrowed",
+        MockResponse::new(200, original),
+    );
+    let client = Client::with_transport(adapter);
+
+    let response = client
+        .get_checked_response(RestRequest::get("https://api.example.com/borrowed"))
+        .await
+        .expect("checked response should succeed");
+    let parsed: BorrowedQuote<'_> = response.json().expect("borrowed parse should succeed");
+
+    assert_eq!(parsed.symbol, "BTC-PERPETUAL");
+    assert_eq!(parsed.price, 69_000.5);
+    assert_eq!(parsed.symbol.as_ptr(), original_ptr.wrapping_add(11));
 }
 
 #[tokio::test]

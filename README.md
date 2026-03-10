@@ -8,11 +8,17 @@ Rate limiting is intentionally layered separately and should be composed with
 
 ### Parse path
 
-`RestResponse::json::<T>(&self)` parses directly from the response bytes with `sonic-rs`:
+`RestResponse::json::<T>(&self)` parses directly from the response bytes with `sonic-rs` and
+supports borrowed output types whose lifetimes are tied to the response body:
 
 - there is no intermediate `String` conversion
 - no explicit JSON AST or intermediate object-blob step
 - `T` is deserialized in one pass from `&[u8]`
+- borrowed fields like `&str` can be zero-copy as long as the `RestResponse` stays alive
+
+`Client::execute_json*` remains the owned convenience path. If you need borrowed zero-copy
+structs, fetch a `RestResponse` first with `get_response` / `get_checked_response`, then call
+`response.json::<BorrowedType>()`.
 
 ## Mocking
 
@@ -58,8 +64,9 @@ and replay coverage should be enforced by tests.
 
 ## Allocation notes
 
-- For production transport, this crate keeps parsing zero-copy by design: parsing happens from the existing response bytes in `RestResponse::json` (no intermediate `String`/AST step).
-`execute_json` now defaults to the raw-response path.
+- For production transport, parsing happens from the existing response bytes in `RestResponse::json` with no intermediate `String` or DOM step.
+- Borrowed zero-copy typed decoding is available only on `RestResponse`, where the body lifetime is still available.
+- `execute_json*` is still useful for owned structs and `sonic_rs::Value`, but it is not the general borrowed zero-copy path because the body is consumed inside the call.
 
 A measurable allocation test (`allocation_profile_is_measurable_for_execute_json_checked`) prints the delta directly in test output (sample):
 
