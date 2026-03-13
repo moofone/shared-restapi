@@ -3,8 +3,7 @@ use std::{future::Future, pin::Pin, time::Duration, time::Instant};
 use bytes::Bytes;
 use reqwest::header::HeaderValue;
 use reqwest::{Client as ReqwestClient, Method};
-use serde::de::DeserializeOwned;
-use sonic_rs::from_slice;
+use sonic_rs::{Deserialize, from_slice};
 use thiserror::Error;
 
 use crate::fixture_policy;
@@ -379,7 +378,20 @@ impl RestResponse {
         &self.body
     }
 
-    pub fn json<T: DeserializeOwned>(&self) -> RestResult<T> {
+    /// Parse directly from the response body. Borrowed output types remain valid only
+    /// while this `RestResponse` is alive.
+    pub fn json<'de, T>(&'de self) -> RestResult<T>
+    where
+        T: Deserialize<'de>,
+    {
+        from_slice(&self.body).map_err(RestError::from)
+    }
+
+    /// Parse into an owned type that does not borrow from the response body.
+    pub fn json_owned<T>(&self) -> RestResult<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
         from_slice(&self.body).map_err(RestError::from)
     }
 
@@ -456,14 +468,14 @@ impl Client {
 
     pub async fn execute_json<T>(&self, request: RestRequest) -> RestResult<T>
     where
-        T: DeserializeOwned,
+        T: for<'de> Deserialize<'de>,
     {
         self.execute_json_direct(request).await
     }
 
     pub async fn execute_json_direct<T>(&self, request: RestRequest) -> RestResult<T>
     where
-        T: DeserializeOwned,
+        T: for<'de> Deserialize<'de>,
     {
         let (_status, body, _elapsed) = self.transport.execute_raw(request).await?;
         from_slice(&body).map_err(RestError::from)
@@ -471,14 +483,14 @@ impl Client {
 
     pub async fn execute_json_checked<T>(&self, request: RestRequest) -> RestResult<T>
     where
-        T: DeserializeOwned,
+        T: for<'de> Deserialize<'de>,
     {
         self.execute_json_checked_direct(request).await
     }
 
     pub async fn execute_json_checked_direct<T>(&self, request: RestRequest) -> RestResult<T>
     where
-        T: DeserializeOwned,
+        T: for<'de> Deserialize<'de>,
     {
         let mut attempt = 0usize;
         loop {
@@ -502,6 +514,10 @@ impl Client {
 
     pub async fn get_response(&self, request: RestRequest) -> RestResult<RestResponse> {
         self.execute(request).await
+    }
+
+    pub async fn get_checked_response(&self, request: RestRequest) -> RestResult<RestResponse> {
+        self.execute_checked(request).await
     }
 
     pub async fn get_url_response(&self, url: impl Into<String>) -> RestResult<RestResponse> {

@@ -9,5 +9,5 @@ help: there is a method `execute_json_checked_direct` with a similar name, but w
   |
   | /     pub async fn execute_json_checked_direct<T>(&self, request: RestRequest) -> RestResult<T>
   | |     where
-  | |         T: DeserializeOwned,
-  | |____________________________^
+  | |         T: for<'de> Deserialize<'de>,
+  | |_____________________________________^

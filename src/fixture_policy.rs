@@ -67,7 +67,10 @@ fn ensure_live_capture_fixture(path: &PathBuf) -> RestResult<()> {
             path.display()
         ))
     })?;
-    let source = root.get("source").and_then(|value| value.as_str()).unwrap_or("");
+    let source = root
+        .get("source")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
     let captured_at_ms = root
         .get("captured_at_ms")
         .and_then(|value| value.as_u64())
@@ -128,9 +131,7 @@ pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
     Ok(())
 }
 
-pub fn validate_required_rest_contracts(
-    requirements: &[RestFixtureRequirement],
-) -> RestResult<()> {
+pub fn validate_required_rest_contracts(requirements: &[RestFixtureRequirement]) -> RestResult<()> {
     if requirements.is_empty() {
         return Err(RestError::internal(
             "required REST fixture validation failed: no fixture contracts registered",
@@ -187,16 +188,22 @@ mod tests {
         let request = RestRequest::new(Method::GET, "https://example.invalid")
             .with_fixture_contract("contract-a");
         let err = ensure_live_request_allowed(&request).expect_err("missing registry should fail");
-        assert!(err.to_string().contains("no required fixture contracts registered"));
+        assert!(
+            err.to_string()
+                .contains("no required fixture contracts registered")
+        );
     }
 
     #[test]
     fn live_request_requires_fixture_contract_metadata() {
         clear_required_rest_contracts_for_tests();
         let request = RestRequest::new(Method::GET, "https://example.invalid");
-        let err =
-            ensure_live_request_allowed(&request).expect_err("missing fixture metadata should fail");
-        assert!(err.to_string().contains("missing required fixture contract metadata"));
+        let err = ensure_live_request_allowed(&request)
+            .expect_err("missing fixture metadata should fail");
+        assert!(
+            err.to_string()
+                .contains("missing required fixture contract metadata")
+        );
     }
 
     #[test]
@@ -217,7 +224,10 @@ mod tests {
             .with_fixture_contract("contract-a");
         let err =
             ensure_live_request_allowed(&request).expect_err("non-live provenance should fail");
-        assert!(err.to_string().contains("not compliant live-capture provenance"));
+        assert!(
+            err.to_string()
+                .contains("not compliant live-capture provenance")
+        );
         let _ = std::fs::remove_file(success);
         let _ = std::fs::remove_file(error);
     }
