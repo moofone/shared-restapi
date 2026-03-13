@@ -980,7 +980,6 @@ dependencies = [
  "axum",
  "bytes",
  "reqwest",
- "serde",
  "sonic-rs",
  "thiserror",
  "tokio",
