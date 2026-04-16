@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 pub mod adapter;
+pub mod fixture;
 pub mod fixture_policy;
 pub mod mock;
 
@@ -18,7 +19,8 @@ pub use fixture_policy::{
     fixture_capture_mode_enabled as rest_fixture_capture_mode_enabled,
     register_required_rest_contracts, required_rest_contracts, validate_required_rest_contracts,
 };
+pub use fixture::RestFixture;
 pub use mock::{
-    MockBehavior, MockBehaviorPlan, MockOperation, MockResponse, MockRestAdapter,
+    FixtureResponse, MockBehavior, MockBehaviorPlan, MockOperation, MockResponse, MockRestAdapter,
     MockRestStateSnapshot, MockScenario, MockScenarioStep, MockScenarioStepKind,
 };

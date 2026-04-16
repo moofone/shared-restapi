@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
+    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -12,6 +13,7 @@ use super::adapter::{
     RestBytes, RestError, RestErrorKind, RestFuture, RestRawResponse, RestRequest, RestResponse,
     RestResult, RestTransport, RestTransportState,
 };
+use crate::fixture::RestFixture;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MockScenarioStepKind {
@@ -292,6 +294,18 @@ impl MockResponse {
 
     pub fn text_error(status: u16, message: impl Into<String>) -> Self {
         Self::text(status, message.into())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FixtureResponse {
+    pub url: String,
+    pub response: MockResponse,
+}
+
+impl FixtureResponse {
+    pub fn from_fixture_file(path: &Path) -> RestResult<Self> {
+        Ok(RestFixture::read(path)?.into_response())
     }
 }
 
@@ -844,5 +858,81 @@ impl RestTransport for MockRestAdapter {
 
             response
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_fixture(name: &str, body: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "shared-restapi-fixture-response-{}-{}.json",
+            std::process::id(),
+            name
+        ));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, body).expect("fixture file should write");
+        path
+    }
+
+    #[test]
+    fn fixture_response_reads_captured_fixture_shape() {
+        let path = write_fixture(
+            "ok",
+            r#"{"url":"https://example.invalid/a","status":200,"body":{"ok":true}}"#,
+        );
+        let fixture =
+            FixtureResponse::from_fixture_file(path.as_path()).expect("fixture should decode");
+        assert_eq!(fixture.url, "https://example.invalid/a");
+        assert_eq!(fixture.response.status, 200);
+        assert_eq!(fixture.response.body, Bytes::from_static(br#"{"ok":true}"#));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn fixture_response_reads_array_body_value() {
+        let path = write_fixture(
+            "array-body",
+            r#"{"url":"https://example.invalid/a","status":200,"body":[{"ok":true},2]}"#,
+        );
+        let fixture =
+            FixtureResponse::from_fixture_file(path.as_path()).expect("fixture should decode");
+        assert_eq!(fixture.response.body, Bytes::from_static(br#"[{"ok":true},2]"#));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn fixture_response_unwraps_double_encoded_body() {
+        let path = write_fixture(
+            "double-encoded",
+            r#"{"url":"https://example.invalid/a","status":200,"body":"\"{\\\"ok\\\":true}\""}"#,
+        );
+        let fixture =
+            FixtureResponse::from_fixture_file(path.as_path()).expect("fixture should decode");
+        assert_eq!(fixture.response.body, Bytes::from_static(br#"{"ok":true}"#));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn fixture_response_unwraps_repeatedly_encoded_body() {
+        let path = write_fixture(
+            "repeated-encoding",
+            r#"{"url":"https://example.invalid/a","status":200,"body":"\"\\\"{\\\\\\\"ok\\\\\\\":true}\\\"\""}"#,
+        );
+        let fixture =
+            FixtureResponse::from_fixture_file(path.as_path()).expect("fixture should decode");
+        assert_eq!(fixture.response.body, Bytes::from_static(br#"{"ok":true}"#));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn fixture_response_rejects_missing_body() {
+        let path = write_fixture("missing-body", r#"{"url":"https://example.invalid/a","status":200}"#);
+        let err = FixtureResponse::from_fixture_file(path.as_path())
+            .expect_err("missing body should fail");
+        assert!(err.to_string().contains("missing body"));
+        let _ = fs::remove_file(path);
     }
 }
