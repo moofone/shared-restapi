@@ -45,6 +45,16 @@ pub fn clear_required_rest_contracts_for_tests() {
         .expect("rest fixture registry poisoned")
         .requirements
         .clear();
+    clear_live_mode_for_tests();
+}
+
+/// Reset the global live-mode flag. Process-wide statics persist across
+/// `#[test]` cases in the same binary, so any test that calls
+/// `enable_live_mode()` (directly or transitively) must reset it on
+/// teardown — otherwise later tests in the same process silently bypass
+/// fixture-policy checks.
+pub fn clear_live_mode_for_tests() {
+    LIVE_MODE.store(false, std::sync::atomic::Ordering::Release);
 }
 
 pub fn fixture_capture_mode_enabled() -> bool {
