@@ -45,6 +45,16 @@ pub fn clear_required_rest_contracts_for_tests() {
         .expect("rest fixture registry poisoned")
         .requirements
         .clear();
+    clear_live_mode_for_tests();
+}
+
+/// Reset the global live-mode flag. Process-wide statics persist across
+/// `#[test]` cases in the same binary, so any test that calls
+/// `enable_live_mode()` (directly or transitively) must reset it on
+/// teardown — otherwise later tests in the same process silently bypass
+/// fixture-policy checks.
+pub fn clear_live_mode_for_tests() {
+    LIVE_MODE.store(false, std::sync::atomic::Ordering::Release);
 }
 
 pub fn fixture_capture_mode_enabled() -> bool {
@@ -96,7 +106,28 @@ fn ensure_live_capture_fixture(path: &PathBuf) -> RestResult<()> {
     Ok(())
 }
 
+/// When true on a Client, all requests bypass fixture policy checks.
+/// Use for production live services.
+static LIVE_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Enable live mode globally — all `shared_restapi` requests bypass fixture policy.
+/// Call once at startup of production services.
+pub fn enable_live_mode() {
+    LIVE_MODE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Check if live mode is enabled.
+pub fn is_live_mode() -> bool {
+    LIVE_MODE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 pub fn ensure_live_request_allowed(request: &RestRequest) -> RestResult<()> {
+    if is_live_mode() {
+        return Ok(());
+    }
+    if request.live_mode {
+        return Ok(());
+    }
     if fixture_capture_mode_enabled() {
         return Ok(());
     }

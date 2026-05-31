@@ -34,9 +34,9 @@ impl RestFixture {
             .ok_or_else(|| {
                 RestError::internal(format!("fixture {} missing status", path.display()))
             })?;
-        let body = root
-            .get("body")
-            .ok_or_else(|| RestError::internal(format!("fixture {} missing body", path.display())))?;
+        let body = root.get("body").ok_or_else(|| {
+            RestError::internal(format!("fixture {} missing body", path.display()))
+        })?;
         Ok(Self {
             source: root
                 .get("source")
@@ -141,7 +141,9 @@ fn decode_embedded_json_string(raw: &str) -> Result<String, String> {
     let mut current = raw.to_string();
     for _ in 0..4 {
         match serde_json::from_str::<serde_json::Value>(current.as_str()) {
-            Ok(serde_json::Value::Object(_)) | Ok(serde_json::Value::Array(_)) => return Ok(current),
+            Ok(serde_json::Value::Object(_)) | Ok(serde_json::Value::Array(_)) => {
+                return Ok(current);
+            }
             Ok(serde_json::Value::String(inner)) => {
                 if inner == current {
                     return Ok(current);
@@ -179,7 +181,9 @@ mod tests {
         };
         fixture.write(path.as_path()).expect("fixture should write");
         let written = std::fs::read_to_string(path.as_path()).expect("fixture should read");
-        assert!(written.contains("\n  \"body\": {\n    \"jsonrpc\": \"2.0\",\n    \"ok\": true\n  }"));
+        assert!(
+            written.contains("\n  \"body\": {\n    \"jsonrpc\": \"2.0\",\n    \"ok\": true\n  }")
+        );
         let decoded = RestFixture::read(path.as_path()).expect("fixture should decode");
         assert_eq!(decoded.body, fixture.body);
         let _ = std::fs::remove_file(path);

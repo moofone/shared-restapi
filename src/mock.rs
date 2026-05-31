@@ -899,7 +899,10 @@ mod tests {
         );
         let fixture =
             FixtureResponse::from_fixture_file(path.as_path()).expect("fixture should decode");
-        assert_eq!(fixture.response.body, Bytes::from_static(br#"[{"ok":true},2]"#));
+        assert_eq!(
+            fixture.response.body,
+            Bytes::from_static(br#"[{"ok":true},2]"#)
+        );
         let _ = fs::remove_file(path);
     }
 
@@ -929,7 +932,10 @@ mod tests {
 
     #[test]
     fn fixture_response_rejects_missing_body() {
-        let path = write_fixture("missing-body", r#"{"url":"https://example.invalid/a","status":200}"#);
+        let path = write_fixture(
+            "missing-body",
+            r#"{"url":"https://example.invalid/a","status":200}"#,
+        );
         let err = FixtureResponse::from_fixture_file(path.as_path())
             .expect_err("missing body should fail");
         assert!(err.to_string().contains("missing body"));

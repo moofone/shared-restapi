@@ -249,6 +249,8 @@ pub struct RestRequest {
     pub timeout: Option<Duration>,
     pub retry_policy: Option<RestRetryPolicy>,
     pub fixture_contract: Option<String>,
+    /// When true, bypasses fixture policy checks — use for production live services.
+    pub live_mode: bool,
 }
 
 impl RestRequest {
@@ -261,6 +263,7 @@ impl RestRequest {
             timeout: Some(DEFAULT_REQUEST_TIMEOUT),
             retry_policy: None,
             fixture_contract: None,
+            live_mode: false,
         }
     }
 
@@ -341,6 +344,12 @@ impl RestRequest {
 
     pub fn with_fixture_contract(mut self, contract_id: impl Into<String>) -> Self {
         self.fixture_contract = Some(contract_id.into());
+        self
+    }
+
+    /// Mark this request as a production live request, bypassing fixture policy checks.
+    pub fn with_live_mode(mut self) -> Self {
+        self.live_mode = true;
         self
     }
 
