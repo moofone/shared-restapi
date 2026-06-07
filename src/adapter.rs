@@ -557,6 +557,170 @@ impl ReqwestTransport {
     pub fn with_client(client: ReqwestClient) -> Self {
         Self { client }
     }
+
+    /// Build a transport that impersonates a Chrome browser to bypass
+    /// Cloudflare fingerprinting (e.g. SafeTrade).
+    ///
+    /// Header/cookie impersonation alone is NOT enough — Cloudflare also
+    /// fingerprints the TLS (JA3/JA4) and HTTP/2 handshake, which a plain
+    /// `reqwest`/rustls client cannot match. This constructor therefore returns
+    /// an [`ImpersonateTransport`] backed by a BoringSSL `wreq::Client` that
+    /// mirrors Chrome's exact TLS + HTTP/2 fingerprint.
+    ///
+    /// The call site is unchanged (`ReqwestTransport::browser_impersonating()`),
+    /// it just now yields the BoringSSL-backed transport instead of a reqwest
+    /// one. Use [`ImpersonateTransport::chrome`] directly if you prefer.
+    pub fn browser_impersonating() -> ImpersonateTransport {
+        ImpersonateTransport::chrome()
+    }
+}
+
+/// Map a `wreq` transport error onto the shared [`RestError`] taxonomy.
+///
+/// `wreq` errors are a distinct type from `reqwest::Error`, so we cannot reuse
+/// [`RestError::from_reqwest`] (whose source field is a `reqwest::Error`).
+/// Instead we project onto the source-less mock-style variants, preserving the
+/// status code, retryability and message.
+fn rest_error_from_wreq(kind: RestErrorKind, err: wreq::Error) -> RestError {
+    let status = err.status().map(|status| status.as_u16());
+    let message = err.to_string();
+    if err.is_timeout() {
+        return RestError::Timeout {
+            status,
+            retryable: true,
+            message,
+        };
+    }
+    let retryable = match kind {
+        RestErrorKind::Connect => err.is_connect(),
+        RestErrorKind::Send => err.is_request() || err.is_connect(),
+        RestErrorKind::Receive => err.is_request(),
+        RestErrorKind::Timeout => true,
+        _ => false,
+    };
+    RestError::mock(kind, message, status, retryable)
+}
+
+/// REST transport that impersonates Chrome's TLS (JA3/JA4) + HTTP/2 fingerprint
+/// via a BoringSSL-backed [`wreq::Client`].
+///
+/// This exists because Cloudflare 403s plain `reqwest`/rustls clients even when
+/// the request headers + cookies look like Chrome — the TLS ClientHello and
+/// HTTP/2 SETTINGS frames give it away. `wreq` (the maintained successor to the
+/// yanked `rquest` crate, by the same author) ships per-browser emulation
+/// presets that reproduce the handshake byte-for-byte.
+#[derive(Clone)]
+pub struct ImpersonateTransport {
+    client: wreq::Client,
+}
+
+impl ImpersonateTransport {
+    /// Build a Chrome-impersonating transport with a persistent cookie store
+    /// (so `cf_clearance` survives across polls).
+    pub fn chrome() -> Self {
+        let client = wreq::Client::builder()
+            .emulation(wreq_util::Emulation::Chrome137)
+            .cookie_store(true)
+            .build()
+            .expect("chrome-impersonating wreq client builds");
+        Self { client }
+    }
+
+    pub fn with_client(client: wreq::Client) -> Self {
+        Self { client }
+    }
+}
+
+impl std::fmt::Debug for ImpersonateTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImpersonateTransport").finish_non_exhaustive()
+    }
+}
+
+impl RestTransport for ImpersonateTransport {
+    fn execute_raw(&self, request: RestRequest) -> RestFuture<RestResult<RestRawResponse>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            fixture_policy::ensure_live_request_allowed(&request)?;
+            let start = Instant::now();
+            let mut req = client.request(request.method.clone(), &request.url);
+
+            for (key, value) in request.headers {
+                let value = HeaderValue::from_bytes(value.as_ref())
+                    .map_err(|err| RestError::internal(err.to_string()))?;
+                req = req.header(key, value);
+            }
+
+            if let Some(body) = request.body {
+                req = req.body(body);
+            }
+
+            if let Some(timeout) = request.timeout {
+                req = req.timeout(timeout);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|err| rest_error_from_wreq(RestErrorKind::Send, err))?;
+
+            let status = resp.status().as_u16();
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|err| rest_error_from_wreq(RestErrorKind::Receive, err))?;
+            let elapsed = start.elapsed();
+
+            Ok((status, body, elapsed))
+        })
+    }
+
+    fn execute(&self, request: RestRequest) -> RestFuture<RestResult<RestResponse>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            fixture_policy::ensure_live_request_allowed(&request)?;
+            let start = Instant::now();
+            let mut req = client.request(request.method.clone(), &request.url);
+
+            for (key, value) in request.headers {
+                let value = HeaderValue::from_bytes(value.as_ref())
+                    .map_err(|err| RestError::internal(err.to_string()))?;
+                req = req.header(key, value);
+            }
+
+            if let Some(body) = request.body {
+                req = req.body(body);
+            }
+
+            if let Some(timeout) = request.timeout {
+                req = req.timeout(timeout);
+            }
+
+            let resp = req
+                .send()
+                .await
+                .map_err(|err| rest_error_from_wreq(RestErrorKind::Send, err))?;
+
+            let status = resp.status().as_u16();
+            let headers = resp
+                .headers()
+                .iter()
+                .map(|(name, value)| (name.to_string(), Bytes::copy_from_slice(value.as_ref())))
+                .collect();
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|err| rest_error_from_wreq(RestErrorKind::Receive, err))?;
+            let elapsed = start.elapsed();
+
+            Ok(RestResponse {
+                status,
+                headers,
+                body,
+                elapsed,
+            })
+        })
+    }
 }
 
 impl Default for ReqwestTransport {
