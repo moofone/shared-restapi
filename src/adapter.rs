@@ -557,6 +557,57 @@ impl ReqwestTransport {
     pub fn with_client(client: ReqwestClient) -> Self {
         Self { client }
     }
+
+    /// Build a transport that impersonates a Chrome browser to bypass
+    /// Cloudflare UA/header heuristics (e.g. SafeTrade).
+    ///
+    /// The underlying `reqwest::Client` is configured with:
+    /// - A Chrome 120 `User-Agent`
+    /// - A realistic set of Chrome request headers (`accept`, `accept-language`,
+    ///   `sec-ch-ua`, `sec-fetch-*` family)
+    /// - `cookie_store(true)` so `cf_clearance` cookies persist across polls
+    /// - `gzip(true)` / `brotli(true)` so `accept-encoding` matches a browser
+    pub fn browser_impersonating() -> Self {
+        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE};
+
+        let mut default_headers = HeaderMap::new();
+        default_headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
+        default_headers.insert(
+            ACCEPT_LANGUAGE,
+            HeaderValue::from_static("en-US,en;q=0.9"),
+        );
+        default_headers.insert(
+            "sec-ch-ua",
+            HeaderValue::from_static(
+                "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+            ),
+        );
+        default_headers.insert("sec-ch-ua-mobile", HeaderValue::from_static("?0"));
+        default_headers.insert(
+            "sec-ch-ua-platform",
+            HeaderValue::from_static("\"Linux\""),
+        );
+        default_headers.insert("sec-fetch-dest", HeaderValue::from_static("empty"));
+        default_headers.insert("sec-fetch-mode", HeaderValue::from_static("cors"));
+        default_headers.insert("sec-fetch-site", HeaderValue::from_static("same-site"));
+
+        let client = ReqwestClient::builder()
+            .user_agent(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            .cookie_store(true)
+            .gzip(true)
+            .brotli(true)
+            .default_headers(default_headers)
+            .build()
+            .expect("browser-impersonating reqwest client builds");
+
+        Self { client }
+    }
 }
 
 impl Default for ReqwestTransport {
