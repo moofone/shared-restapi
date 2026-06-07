@@ -13,8 +13,9 @@ pub use reqwest::Method;
 pub use runtime::block_on_rest_future;
 
 pub use adapter::{
-    Client, ReqwestTransport, RestBytes, RestError, RestErrorKind, RestFuture, RestRequest,
-    RestResponse, RestResult, RestRetryPolicy, RestTransport, RestTransportState,
+    Client, ImpersonateTransport, ReqwestTransport, RestBytes, RestError, RestErrorKind,
+    RestFuture, RestRequest, RestResponse, RestResult, RestRetryPolicy, RestTransport,
+    RestTransportState,
 };
 pub use fixture::RestFixture;
 pub use fixture_policy::{
